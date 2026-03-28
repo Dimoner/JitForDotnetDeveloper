@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JIT Log Visualizer - .NET Compilation Analyzer</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-tertiary: #1a2332;
+            --accent-primary: #00ffaa;
+            --accent-secondary: #00d4ff;
+            --accent-tertiary: #ff00ff;
+            --text-primary: #e5e7eb;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --border-color: #2a3a52;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+        }
+
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: 
+                radial-gradient(circle at 20% 50%, rgba(0, 255, 170, 0.05) 0%, transparent 50%),
+                radial-gradient(circle at 80% 50%, rgba(0, 212, 255, 0.05) 0%, transparent 50%);
+            animation: bgPulse 20s ease-in-out infinite;
+            z-index: 0;
+        }
+
+        @keyframes bgPulse {
+            0%, 100% { transform: translate(0, 0) rotate(0deg); }
+            50% { transform: translate(10px, 10px) rotate(5deg); }
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 2.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 
+                0 0 40px rgba(0, 255, 170, 0.1),
+                inset 0 1px 0 rgba(255, 255, 255, 0.05);
+            animation: slideDown 0.6s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        h1 {
+            font-family: 'Syne', sans-serif;
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.5px;
+        }
+
+        .subtitle {
+            font-family: 'Space Mono', monospace;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        /* Upload Zone */
+        .upload-zone {
+            display: none;
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border: 2px dashed var(--border-color);
+            border-radius: 16px;
+            padding: 3rem;
+            text-align: center;
+            margin-bottom: 2rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .upload-zone.show {
+            display: block;
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .upload-zone::before {
+            content: '';
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            background: linear-gradient(45deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary));
+            border-radius: 16px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: -1;
+        }
+
+        .upload-zone:hover::before {
+            opacity: 0.3;
+        }
+
+        .upload-zone:hover {
+            border-color: var(--accent-primary);
+            transform: translateY(-4px);
+            box-shadow: 0 8px 32px rgba(0, 255, 170, 0.2);
+        }
+
+        .upload-zone.dragover {
+            border-color: var(--accent-primary);
+            background: rgba(0, 255, 170, 0.1);
+        }
+
+        .upload-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        .upload-text {
+            font-size: 1.2rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .upload-hint {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            border: none;
+            color: var(--bg-primary);
+            padding: 0.75rem 2rem;
+            border-radius: 10px;
+            cursor: pointer;
+            font-family: 'Space Mono', monospace;
+            font-size: 0.9rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+            margin-top: 1rem;
+            display: inline-block;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 255, 170, 0.3);
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 4px 12px rgba(0, 255, 170, 0.2);
+        }
+
+        /* Results Section */
+        #results {
+            display: none;
+        }
+
+        #results.show {
+            display: block;
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        .method-signature {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-primary);
+            border-left: 4px solid var(--accent-primary);
+            padding: 1rem 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            color: var(--accent-primary);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .nav-tab {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            padding: 0.75rem 1.5rem;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            font-family: 'Space Mono', monospace;
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .nav-tab::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0, 255, 170, 0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .nav-tab:hover::before {
+            left: 100%;
+        }
+
+        .nav-tab:hover {
+            border-color: var(--accent-primary);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 255, 170, 0.2);
+        }
+
+        .nav-tab.active {
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            border-color: transparent;
+            color: var(--bg-primary);
+            box-shadow: 0 4px 20px rgba(0, 255, 170, 0.3);
+        }
+
+        .content-section {
+            display: none;
+        }
+
+        .content-section.active {
+            display: block;
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        .log-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            margin-bottom: 1.5rem;
+        }
+
+        .log-header {
+            background: linear-gradient(90deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .log-header-dots {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .dot-red { background: var(--danger); }
+        .dot-yellow { background: var(--warning); animation-delay: 0.2s; }
+        .dot-green { background: var(--success); animation-delay: 0.4s; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.9); }
+        }
+
+        .log-title {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .log-content {
+            padding: 1.5rem;
+            max-height: 600px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+        }
+
+        .log-content::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        .log-content::-webkit-scrollbar-track {
+            background: var(--bg-tertiary);
+        }
+
+        .log-content::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 5px;
+        }
+
+        .log-line {
+            display: flex;
+            gap: 1rem;
+            padding: 0.25rem 0;
+            transition: background 0.2s;
+        }
+
+        .log-line:hover {
+            background: rgba(0, 255, 170, 0.05);
+            border-left: 2px solid var(--accent-primary);
+            padding-left: 0.5rem;
+        }
+
+        .line-number {
+            color: var(--text-muted);
+            min-width: 60px;
+            text-align: right;
+            user-select: none;
+            font-weight: 600;
+        }
+
+        .line-content {
+            color: var(--text-primary);
+            flex: 1;
+            word-break: break-all;
+        }
+
+        .keyword { color: var(--accent-tertiary); font-weight: 600; }
+        .method { color: var(--accent-secondary); }
+        .address { color: var(--accent-primary); }
+        .number { color: #fbbf24; }
+        .register { color: #fb923c; }
+        .comment { color: var(--text-muted); font-style: italic; }
+        .header-marker { color: var(--accent-primary); font-weight: 800; }
+        .phase { color: var(--accent-secondary); font-weight: 700; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover::before {
+            transform: scaleX(1);
+        }
+
+        .stat-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0, 255, 170, 0.2);
+            border-color: var(--accent-primary);
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 0.5rem;
+            font-family: 'Space Mono', monospace;
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-family: 'Syne', sans-serif;
+        }
+
+        .search-container {
+            margin-bottom: 1.5rem;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 1rem 1.5rem;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.95rem;
+            transition: all 0.3s ease;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 20px rgba(0, 255, 170, 0.2);
+        }
+
+        .highlight {
+            background: rgba(255, 255, 0, 0.3);
+            padding: 2px 0;
+        }
+
+        .metric-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+
+        .metric-table th,
+        .metric-table td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .metric-table th {
+            background: var(--bg-tertiary);
+            font-family: 'Space Mono', monospace;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent-primary);
+            font-weight: 700;
+        }
+
+        .metric-table tr:hover {
+            background: rgba(0, 255, 170, 0.05);
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid var(--border-color);
+            border-top: 4px solid var(--accent-primary);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        footer {
+            margin-top: 3rem;
+            padding: 2rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border-color);
+            font-family: 'Space Mono', monospace;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            .nav-tabs {
+                flex-direction: column;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>JIT Log Visualizer</h1>
+            <p class="subtitle">.NET Compilation Analysis Tool</p>
+        </header>
+
+        <div class="upload-zone show" id="uploadZone">
+            <div class="upload-icon">📁</div>
+            <div class="upload-text">Перетащите сюда JIT лог-файл</div>
+            <div class="upload-hint">или нажмите для выбора файла (.txt, .log)</div>
+            <input type="file" id="fileInput" accept=".txt,.log">
+            <button class="btn" onclick="document.getElementById('fileInput').click()">Выбрать файл</button>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <div class="upload-text">Анализируем лог...</div>
+        </div>
+
+        <div id="results">
+            <div style="display: flex; gap: 1rem; margin-bottom: 2rem; align-items: center;">
+                <button class="btn btn-secondary" onclick="resetApp()">← Загрузить другой файл</button>
+                <button class="btn" onclick="exportHTML()">💾 Экспортировать HTML</button>
+            </div>
+
+            <div class="method-signature" id="methodSignature"></div>
+
+            <div class="nav-tabs">
+                <div class="nav-tab active" onclick="showTab('overview')">Overview</div>
+                <div class="nav-tab" onclick="showTab('il-code')">IL Code</div>
+                <div class="nav-tab" onclick="showTab('phases')">Phases</div>
+                <div class="nav-tab" onclick="showTab('assembly')">Assembly</div>
+                <div class="nav-tab" onclick="showTab('metrics')">Metrics</div>
+                <div class="nav-tab" onclick="showTab('full-log')">Full Log</div>
+            </div>
+
+            <div id="overview" class="content-section active">
+                <div class="stats-grid" id="statsGrid"></div>
+                <div class="log-container">
+                    <div class="log-header">
+                        <div class="log-header-dots">
+                            <div class="dot dot-green"></div>
+                            <div class="dot dot-green"></div>
+                            <div class="dot dot-green"></div>
+                        </div>
+                        <div class="log-title">Compilation Summary</div>
+                    </div>
+                    <div class="log-content">
+                        <pre id="summaryContent" style="color: var(--text-primary);"></pre>
+                    </div>
+                </div>
+            </div>
+
+            <div id="il-code" class="content-section">
+                <div class="search-container">
+                    <input type="text" class="search-input" id="ilSearch" placeholder="Search IL code..." onkeyup="searchLog('il-log', 'ilSearch')">
+                </div>
+                <div class="log-container">
+                    <div class="log-header">
+                        <div class="log-header-dots">
+                            <div class="dot dot-red"></div>
+                            <div class="dot dot-yellow"></div>
+                            <div class="dot dot-green"></div>
+                        </div>
+                        <div class="log-title">IL (Intermediate Language) Code</div>
+                    </div>
+                    <div class="log-content" id="il-log"></div>
+                </div>
+            </div>
+
+            <div id="phases" class="content-section">
+                <div class="log-container">
+                    <div class="log-header">
+                        <div class="log-header-dots">
+                            <div class="dot dot-green"></div>
+                            <div class="dot dot-green"></div>
+                            <div class="dot dot-green"></div>
+                        </div>
+                        <div class="log-title">Compilation Phases</div>
+                    </div>
+                    <div class="log-content" id="phasesContent"></div>
+                </div>
+            </div>
+
+            <div id="assembly" class="content-section">
+                <div class="search-container">
+                    <input type="text" class="search-input" id="asmSearch" placeholder="Search assembly code..." onkeyup="searchLog('asm-log', 'asmSearch')">
+                </div>
+                <div class="log-container">
+                    <div class="log-header">
+                        <div class="log-header-dots">
+                            <div class="dot dot-red"></div>
+                            <div class="dot dot-yellow"></div>
+                            <div class="dot dot-green"></div>
+                        </div>
+                        <div class="log-title">Assembly Output</div>
+                    </div>
+                    <div class="log-content" id="asm-log"></div>
+                </div>
+            </div>
+
+            <div id="metrics" class="content-section">
+                <div class="stats-grid" id="metricsGrid"></div>
+                <div class="log-container">
+                    <div class="log-header">
+                        <div class="log-header-dots">
+                            <div class="dot dot-red"></div>
+                            <div class="dot dot-yellow"></div>
+                            <div class="dot dot-green"></div>
+                        </div>
+                        <div class="log-title">Memory Allocations</div>
+                    </div>
+                    <div class="log-content" id="allocationsContent"></div>
+                </div>
+            </div>
+
+            <div id="full-log" class="content-section">
+                <div class="search-container">
+                    <input type="text" class="search-input" id="fullLogSearch" placeholder="Search full log..." onkeyup="searchLog('full-log-content', 'fullLogSearch')">
+                </div>
+                <div class="log-container">
+                    <div class="log-header">
+                        <div class="log-header-dots">
+                            <div class="dot dot-red"></div>
+                            <div class="dot dot-yellow"></div>
+                            <div class="dot dot-green"></div>
+                        </div>
+                        <div class="log-title" id="fullLogTitle">Full Log</div>
+                    </div>
+                    <div class="log-content" id="full-log-content" style="max-height: 800px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>JIT Log Visualizer v1.0 | Supports .NET JIT Compilation Logs | Created with ❤️</p>
+        </footer>
+    </div>
+
+    <script>
+        let parsedData = {};
+        let fullLogContent = '';
+
+        // File upload handling
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+
+        uploadZone.addEventListener('click', () => fileInput.click());
+
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            document.getElementById('uploadZone').classList.remove('show');
+            document.getElementById('loading').classList.add('show');
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                setTimeout(() => {
+                    parseLog(e.target.result);
+                    displayResults();
+                    document.getElementById('loading').classList.remove('show');
+                    document.getElementById('results').classList.add('show');
+                }, 500);
+            };
+            reader.readAsText(file);
+        }
+
+        function parseLog(content) {
+            fullLogContent = content;
+            const lines = content.split('\n');
+            parsedData = {
+                methodName: '',
+                methodHash: '',
+                platform: '',
+                codeSize: 0,
+                ilInstructions: [],
+                phases: [],
+                assembly: [],
+                metrics: {},
+                allocations: [],
+                fullLines: lines
+            };
+
+            // Parse method name and hash
+            const startLine = lines.find(l => l.includes('START compiling'));
+            if (startLine) {
+                const match = startLine.match(/compiling (.+?) \(MethodHash=([^\)]+)\)/);
+                if (match) {
+                    parsedData.methodName = match[1];
+                    parsedData.methodHash = match[2];
+                }
+            }
+
+            // Parse platform
+            const platformLine = lines.find(l => l.includes('Generating code for'));
+            if (platformLine) {
+                parsedData.platform = platformLine.split('for ')[1]?.trim() || 'Unknown';
+            }
+
+            // Parse IL code
+            let inIL = false;
+            for (let line of lines) {
+                if (line.includes('IL to import:')) {
+                    inIL = true;
+                    continue;
+                }
+                if (inIL && line.trim().startsWith('IL_')) {
+                    parsedData.ilInstructions.push(line.trim());
+                }
+                if (inIL && line.includes('return registers')) {
+                    inIL = false;
+                }
+            }
+
+            // Parse phases
+            for (let line of lines) {
+                if (line.includes('Starting PHASE')) {
+                    const phaseName = line.split('PHASE ')[1]?.trim();
+                    if (phaseName) {
+                        parsedData.phases.push({ name: phaseName, status: 'Complete' });
+                    }
+                }
+            }
+
+            // Parse code size
+            const codeSizeLine = lines.find(l => l.includes('Method code size:'));
+            if (codeSizeLine) {
+                parsedData.codeSize = parseInt(codeSizeLine.match(/\d+/)?.[0] || 0);
+            }
+
+            // Parse final metrics
+            let inMetrics = false;
+            for (let line of lines) {
+                if (line.includes('Final metrics:')) {
+                    inMetrics = true;
+                    continue;
+                }
+                if (inMetrics && line.includes(':')) {
+                    const parts = line.split(':');
+                    if (parts.length === 2) {
+                        const key = parts[0].trim();
+                        const value = parts[1].trim();
+                        parsedData.metrics[key] = value;
+                    }
+                }
+                if (inMetrics && line.includes('DONE compiling')) {
+                    inMetrics = false;
+                }
+            }
+
+            // Parse allocations
+            let inAlloc = false;
+            for (let line of lines) {
+                if (line.includes("Alloc'd bytes by kind:")) {
+                    inAlloc = true;
+                    continue;
+                }
+                if (inAlloc && line.includes('|')) {
+                    const parts = line.split('|').map(p => p.trim());
+                    if (parts.length === 3 && parts[0] && !parts[0].includes('-')) {
+                        parsedData.allocations.push({
+                            kind: parts[0],
+                            size: parts[1],
+                            pct: parts[2]
+                        });
+                    }
+                }
+                if (inAlloc && line.includes('Final metrics:')) {
+                    inAlloc = false;
+                }
+            }
+
+            // Parse assembly (simple extraction)
+            let inAsm = false;
+            for (let line of lines) {
+                if (line.includes('IN_PROLOG') || line.match(/^G_M\d+/)) {
+                    inAsm = true;
+                }
+                if (inAsm && (line.match(/^\s*;/) || line.match(/0x[0-9a-f]+/i))) {
+                    parsedData.assembly.push(line);
+                }
+                if (line.includes('Unwind Info:')) {
+                    inAsm = false;
+                }
+            }
+        }
+
+        function displayResults() {
+            // Method signature
+            document.getElementById('methodSignature').textContent = 
+                `${parsedData.methodName} (${parsedData.methodHash})`;
+
+            // Stats grid
+            const statsHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">Platform</div>
+                    <div class="stat-value">${parsedData.platform}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Code Size</div>
+                    <div class="stat-value">${parsedData.codeSize} bytes</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">IL Instructions</div>
+                    <div class="stat-value">${parsedData.ilInstructions.length}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Compilation Phases</div>
+                    <div class="stat-value">${parsedData.phases.length}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Basic Blocks</div>
+                    <div class="stat-value">${parsedData.metrics.BasicBlocksAtCodegen || 'N/A'}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Bytes Allocated</div>
+                    <div class="stat-value">${formatNumber(parsedData.metrics.BytesAllocated)}</div>
+                </div>
+            `;
+            document.getElementById('statsGrid').innerHTML = statsHTML;
+
+            // Summary
+            const summaryHTML = `
+<span class="keyword">Method:</span>        ${parsedData.methodName}
+<span class="keyword">MethodHash:</span>    ${parsedData.methodHash}
+<span class="keyword">Platform:</span>      ${parsedData.platform}
+<span class="keyword">Code Size:</span>     ${parsedData.codeSize} bytes
+
+<span class="phase">Compilation Stages:</span>
+${parsedData.phases.map(p => `  ✓ ${p.name}`).join('\n')}
+
+<span class="keyword">Performance Score:</span> ${parsedData.metrics.PerfScore || 'N/A'}
+<span class="keyword">Stack Allocated Arrays:</span> ${parsedData.metrics.StackAllocatedArrays || '0'}
+            `;
+            document.getElementById('summaryContent').innerHTML = summaryHTML;
+
+            // IL Code
+            let ilHTML = '';
+            parsedData.ilInstructions.forEach((line, i) => {
+                const highlighted = highlightIL(line);
+                ilHTML += `<div class="log-line"><span class="line-number">${i + 1}</span><span class="line-content">${highlighted}</span></div>`;
+            });
+            document.getElementById('il-log').innerHTML = ilHTML || '<div class="log-line"><span class="line-content">No IL code found</span></div>';
+
+            // Phases
+            let phasesHTML = '<table class="metric-table"><thead><tr><th>Phase</th><th>Status</th></tr></thead><tbody>';
+            parsedData.phases.forEach(phase => {
+                phasesHTML += `<tr><td><span class="phase">${phase.name}</span></td><td><span class="keyword">✓ ${phase.status}</span></td></tr>`;
+            });
+            phasesHTML += '</tbody></table>';
+            document.getElementById('phasesContent').innerHTML = phasesHTML;
+
+            // Assembly
+            let asmHTML = '';
+            parsedData.assembly.forEach((line, i) => {
+                const highlighted = highlightAsm(line);
+                asmHTML += `<div class="log-line"><span class="line-number">${i + 1}</span><span class="line-content">${highlighted}</span></div>`;
+            });
+            document.getElementById('asm-log').innerHTML = asmHTML || '<div class="log-line"><span class="line-content">No assembly code found</span></div>';
+
+            // Metrics
+            const metricsHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">Loops Found</div>
+                    <div class="stat-value">${parsedData.metrics.LoopsFoundDuringOpts || '0'}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Variables in SSA</div>
+                    <div class="stat-value">${parsedData.metrics.VarsInSsa || '0'}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Performance Score</div>
+                    <div class="stat-value">${parsedData.metrics.PerfScore || 'N/A'}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Inline Count</div>
+                    <div class="stat-value">${parsedData.metrics.InlineCount || '0'}</div>
+                </div>
+            `;
+            document.getElementById('metricsGrid').innerHTML = metricsHTML;
+
+            // Allocations
+            let allocHTML = '<table class="metric-table"><thead><tr><th>Component</th><th>Size</th><th>Percentage</th></tr></thead><tbody>';
+            parsedData.allocations.forEach(alloc => {
+                allocHTML += `<tr><td>${alloc.kind}</td><td class="number">${alloc.size}</td><td>${alloc.pct}</td></tr>`;
+            });
+            allocHTML += '</tbody></table>';
+            document.getElementById('allocationsContent').innerHTML = allocHTML;
+
+            // Full log
+            let fullHTML = '';
+            parsedData.fullLines.forEach((line, i) => {
+                const highlighted = highlightLine(line);
+                fullHTML += `<div class="log-line"><span class="line-number">${i + 1}</span><span class="line-content">${highlighted}</span></div>`;
+            });
+            document.getElementById('full-log-content').innerHTML = fullHTML;
+            document.getElementById('fullLogTitle').textContent = `Full Log (${parsedData.fullLines.length} lines)`;
+        }
+
+        function highlightIL(line) {
+            return line
+                .replace(/\b(ldc\.i4\.\d+|newarr|dup|ldarg\.\d+|stelem\.i4|call|ret|ldarg|stloc|ldloc)\b/g, '<span class="keyword">$1</span>')
+                .replace(/0x[0-9a-f]+/gi, '<span class="address">$&</span>')
+                .replace(/\d+/g, '<span class="number">$&</span>');
+        }
+
+        function highlightAsm(line) {
+            return line
+                .replace(/\b(mov|str|ldr|stp|ldp|bl|ret|add|sub)\b/g, '<span class="keyword">$1</span>')
+                .replace(/\b(x\d+|w\d+|sp|fp|lr)\b/g, '<span class="register">$1</span>')
+                .replace(/0x[0-9a-f]+/gi, '<span class="address">$&</span>')
+                .replace(/#-?\d+/g, '<span class="number">$&</span>')
+                .replace(/;.+$/g, '<span class="comment">$&</span>');
+        }
+
+        function highlightLine(line) {
+            if (line.includes('******')) {
+                return line.replace(/\*+ (START|DONE|Finishing|Starting)/g, '<span class="header-marker">$&</span>');
+            }
+            if (line.includes('PHASE')) {
+                return line.replace(/PHASE [^[]+/g, '<span class="phase">$&</span>');
+            }
+            return line
+                .replace(/\b(OPTIONS|Method|Platform|Code Size):/g, '<span class="keyword">$&</span>')
+                .replace(/0x[0-9a-f]+/gi, '<span class="address">$&</span>');
+        }
+
+        function formatNumber(num) {
+            if (!num) return 'N/A';
+            return parseInt(num).toLocaleString();
+        }
+
+        function showTab(tabName) {
+            document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function searchLog(contentId, searchId) {
+            const searchTerm = document.getElementById(searchId).value.toLowerCase();
+            const content = document.getElementById(contentId);
+            const lines = content.querySelectorAll('.log-line');
+
+            lines.forEach(line => {
+                const text = line.textContent.toLowerCase();
+                if (searchTerm && text.includes(searchTerm)) {
+                    line.style.display = 'flex';
+                } else if (searchTerm) {
+                    line.style.display = 'none';
+                } else {
+                    line.style.display = 'flex';
+                }
+            });
+        }
+
+        function resetApp() {
+            document.getElementById('results').classList.remove('show');
+            document.getElementById('uploadZone').classList.add('show');
+            document.getElementById('fileInput').value = '';
+            parsedData = {};
+            fullLogContent = '';
+        }
+
+        function exportHTML() {
+            const htmlContent = document.documentElement.outerHTML;
+            const blob = new Blob([htmlContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `jit-log-${parsedData.methodHash || 'export'}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>

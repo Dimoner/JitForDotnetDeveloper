@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RyuJIT — Compilation Phases</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Barlow+Condensed:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:       #eef0f6;
+  --surface:  #0c1018;
+  --surface2: #111820;
+  --surface3: #161f2b;
+  --border:   #1b2738;
+  --border2:  #233149;
+  --text:     #c8d6e8;
+  --muted:    #4a6070;
+  --dim:      #283a4a;
+
+  --c-import:  #38bdf8;
+  --c-morph:   #fb923c;
+  --c-opt:     #a3e635;
+  --c-eh:      #f472b6;
+  --c-ssa:     #818cf8;
+  --c-codegen: #34d399;
+  --c-loop:    #f87171;
+  --c-debug:   #6b7280;
+  --c-cond:    #fbbf24;
+
+  --track-w: 2px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.05) 3px, rgba(0,0,0,0.05) 4px);
+  pointer-events: none; z-index: 0;
+}
+
+.wrap { position: relative; z-index: 1; max-width: 980px; margin: 0 auto; padding: 2.5rem 1.5rem 6rem; }
+
+header { margin-bottom: 2.5rem; }
+.logo { font-family: 'Barlow Condensed', sans-serif; font-size: 0.68rem; font-weight: 600; color: var(--muted); letter-spacing: 0.22em; text-transform: uppercase; margin-bottom: 0.4rem; }
+h1 { font-family: 'Barlow Condensed', sans-serif; font-size: clamp(1.8rem, 4.5vw, 3rem); font-weight: 800; line-height: 0.95; letter-spacing: -0.01em; margin-bottom: 1.2rem; }
+h1 em { color: var(--c-opt); font-style: normal; }
+
+.meta-row { display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+.stat-val { font-family: 'Barlow Condensed', sans-serif; font-size: 1.8rem; font-weight: 700; line-height: 1; }
+.stat-lbl { font-size: 0.58rem; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-top: 0.15rem; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; margin-bottom: 1.5rem; }
+.legend-item { display: flex; align-items: center; gap: 0.35rem; font-size: 0.62rem; color: var(--muted); cursor: pointer; transition: color 0.15s; user-select: none; }
+.legend-item:hover { color: var(--text); }
+.ldot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+.filter-bar { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 2rem; }
+.fbtn { background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 0.62rem; padding: 0.3rem 0.65rem; border-radius: 2px; cursor: pointer; letter-spacing: 0.05em; transition: all 0.15s; }
+.fbtn:hover { border-color: var(--border2); color: var(--text); }
+.fbtn.active { background: var(--surface3); border-color: var(--c-opt); color: var(--c-opt); }
+
+.pipeline { position: relative; padding-left: 2.2rem; }
+.pipeline::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: var(--track-w);
+  background: linear-gradient(to bottom, var(--border) 0%, var(--border2) 40%, var(--border) 100%);
+}
+
+.group { margin-bottom: 0.2rem; }
+
+.group-header {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.65rem 0.5rem 0.65rem 0;
+  cursor: pointer; user-select: none; position: relative;
+  transition: opacity 0.15s;
+}
+.group-header:hover { opacity: 0.85; }
+.group-header::before {
+  content: '';
+  position: absolute;
+  left: calc(-2.2rem + 0px);
+  top: 50%; transform: translateY(-50%);
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: var(--track-w) solid currentColor;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.group-label { font-family: 'Barlow Condensed', sans-serif; font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; }
+.group-badge { font-size: 0.6rem; color: var(--muted); background: var(--surface2); border: 1px solid var(--border); padding: 0.1rem 0.4rem; border-radius: 2px; }
+.group-arrow { margin-left: auto; font-size: 0.58rem; color: var(--muted); transition: transform 0.2s; }
+.group.collapsed .group-arrow { transform: rotate(-90deg); }
+
+.group-body { overflow: hidden; }
+.group.collapsed .group-body { max-height: 0 !important; }
+
+.group[data-cat="import"]  .group-header { color: var(--c-import); }
+.group[data-cat="morph"]   .group-header { color: var(--c-morph); }
+.group[data-cat="opt"]     .group-header { color: var(--c-opt); }
+.group[data-cat="eh"]      .group-header { color: var(--c-eh); }
+.group[data-cat="ssa"]     .group-header { color: var(--c-ssa); }
+.group[data-cat="codegen"] .group-header { color: var(--c-codegen); }
+.group[data-cat="loop"]    .group-header { color: var(--c-loop); }
+.group[data-cat="debug"]   .group-header { color: var(--c-debug); }
+
+.phase {
+  position: relative;
+  margin-bottom: 2px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
+  animation: fadeSlide 0.25s ease both;
+}
+.phase:hover { background: var(--surface2); border-color: var(--border); }
+
+.phase::before {
+  content: '';
+  position: absolute;
+  left: calc(-2.2rem + 5px);
+  top: 1.1rem;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.phase[data-cat="import"]::before  { background: var(--c-import); opacity: 0.6; }
+.phase[data-cat="morph"]::before   { background: var(--c-morph);  opacity: 0.6; }
+.phase[data-cat="opt"]::before     { background: var(--c-opt);    opacity: 0.6; }
+.phase[data-cat="eh"]::before      { background: var(--c-eh);     opacity: 0.6; }
+.phase[data-cat="ssa"]::before     { background: var(--c-ssa);    opacity: 0.6; }
+.phase[data-cat="codegen"]::before { background: var(--c-codegen);opacity: 0.6; }
+.phase[data-cat="loop"]::before    { background: var(--c-loop);   opacity: 0.6; }
+.phase[data-cat="debug"]::before   { background: var(--c-debug);  opacity: 0.6; }
+
+.phase-inner {
+  display: grid;
+  grid-template-columns: 2.4rem 1fr auto;
+  gap: 0 0.6rem;
+  padding: 0.7rem 0.75rem 0.7rem 0;
+}
+
+.phase-num { font-size: 0.58rem; color: var(--muted); text-align: right; padding-top: 0.15rem; font-variant-numeric: tabular-nums; align-self: start; }
+
+.phase-content { min-width: 0; }
+
+.phase-name { font-size: 0.8rem; font-weight: 600; display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.25rem; }
+.phase[data-cat="import"]  .phase-name { color: #7dd3f8; }
+.phase[data-cat="morph"]   .phase-name { color: #fdb87a; }
+.phase[data-cat="opt"]     .phase-name { color: #c5f172; }
+.phase[data-cat="eh"]      .phase-name { color: #f9a8d4; }
+.phase[data-cat="ssa"]     .phase-name { color: #a5b4fc; }
+.phase[data-cat="codegen"] .phase-name { color: #6ee7b7; }
+.phase[data-cat="loop"]    .phase-name { color: #fca5a5; }
+.phase[data-cat="debug"]   .phase-name { color: #9ca3af; }
+
+.phase-fn { font-size: 0.62rem; color: var(--muted); margin-bottom: 0.45rem; font-style: italic; }
+.phase-fn em { color: var(--dim); font-style: normal; }
+
+.phase-desc {
+  background: var(--surface3);
+  border-left: 2px solid var(--dim);
+  border-radius: 0 3px 3px 0;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.68rem;
+  line-height: 1.75;
+  color: #8aabb8;
+  margin-bottom: 0.35rem;
+}
+.phase-desc b { color: var(--text); font-weight: 600; }
+.phase-desc code { font-family: 'IBM Plex Mono', monospace; font-size: 0.62rem; background: var(--surface); padding: 0.05rem 0.25rem; border-radius: 2px; color: #a0c8e0; }
+
+.phase[data-cat="import"]  .phase-desc { border-left-color: var(--c-import); }
+.phase[data-cat="morph"]   .phase-desc { border-left-color: var(--c-morph); }
+.phase[data-cat="opt"]     .phase-desc { border-left-color: var(--c-opt); }
+.phase[data-cat="eh"]      .phase-desc { border-left-color: var(--c-eh); }
+.phase[data-cat="ssa"]     .phase-desc { border-left-color: var(--c-ssa); }
+.phase[data-cat="codegen"] .phase-desc { border-left-color: var(--c-codegen); }
+.phase[data-cat="loop"]    .phase-desc { border-left-color: var(--c-loop); }
+.phase[data-cat="debug"]   .phase-desc { border-left-color: var(--c-debug); }
+
+.phase-tags { display: flex; flex-direction: column; gap: 0.2rem; align-items: flex-end; }
+.tag { font-size: 0.53rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; padding: 0.12rem 0.38rem; border-radius: 2px; white-space: nowrap; }
+.tag-cond   { background: #221a00; color: var(--c-cond);   border: 1px solid #332800; }
+.tag-debug  { background: #181818; color: var(--c-debug);  border: 1px solid #252525; }
+.tag-loop   { background: #220a0a; color: var(--c-loop);   border: 1px solid #331010; }
+.tag-repeat { background: #160a22; color: var(--c-ssa);    border: 1px solid #220a33; }
+.tag-wasm   { background: #001810; color: var(--c-codegen);border: 1px solid #002a1a; }
+.tag-swift  { background: #1a0012; color: var(--c-eh);     border: 1px solid #280018; }
+
+.phase.hidden { display: none !important; }
+
+@keyframes fadeSlide { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="logo">RyuJIT · Compiler::compCompile · dotnet/runtime</div>
+  <h1>Compilation <em>Phases</em></h1>
+
+  <div class="meta-row">
+    <div><div class="stat-val" style="color:var(--c-opt)">97</div><div class="stat-lbl">Всего фаз</div></div>
+    <div><div class="stat-val" style="color:var(--c-cond)">~35</div><div class="stat-lbl">Только при оптимизации</div></div>
+    <div><div class="stat-val" style="color:var(--c-loop)">8</div><div class="stat-lbl">Групп</div></div>
+    <div><div class="stat-val" style="color:var(--c-ssa)">1</div><div class="stat-lbl">Opt-цикл (повторяемый)</div></div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item" onclick="filterCat('import')"><div class="ldot" style="background:var(--c-import)"></div>Import / Parse</div>
+    <div class="legend-item" onclick="filterCat('morph')"><div class="ldot"  style="background:var(--c-morph)"></div>Morph / Inline</div>
+    <div class="legend-item" onclick="filterCat('eh')"><div class="ldot"     style="background:var(--c-eh)"></div>EH / Exceptions</div>
+    <div class="legend-item" onclick="filterCat('loop')"><div class="ldot"   style="background:var(--c-loop)"></div>Loops</div>
+    <div class="legend-item" onclick="filterCat('ssa')"><div class="ldot"    style="background:var(--c-ssa)"></div>SSA / Value Num</div>
+    <div class="legend-item" onclick="filterCat('opt')"><div class="ldot"    style="background:var(--c-opt)"></div>Optimizations</div>
+    <div class="legend-item" onclick="filterCat('codegen')"><div class="ldot" style="background:var(--c-codegen)"></div>Codegen / LSRA</div>
+    <div class="legend-item" onclick="filterCat('debug')"><div class="ldot"  style="background:var(--c-debug)"></div>Debug only</div>
+  </div>
+
+  <div class="filter-bar">
+    <button class="fbtn active" onclick="filterAll(this)">ВСЕ ФАЗЫ</button>
+    <button class="fbtn" onclick="filterOpt(this)">ТОЛЬКО ПРИ ОПТИМИЗАЦИИ</button>
+    <button class="fbtn" onclick="filterAlways(this)">ВСЕГДА ВЫПОЛНЯЮТСЯ</button>
+    <button class="fbtn" onclick="expandAll()">РАЗВЕРНУТЬ ВСЕ</button>
+    <button class="fbtn" onclick="collapseAll()">СВЕРНУТЬ ВСЕ</button>
+  </div>
+</header>
+
+<div class="pipeline" id="pipeline"></div>
+</div>
+
+<script>
+const PHASES = [
+{
+  group: 'Подготовка и профиль',
+  gcat: 'import',
+  phases: [
+    { num:1, name:'Pre-import', cat:'import', always:true,
+      fn:'PHASE_PRE_IMPORT → preImportPhase()',
+      desc:`<b>Инициализация перед импортом IL.</b> Выполняет три вещи: (1) если компилятор работает как <i>inlinee</i> — уведомляет корневую стратегию инлайнинга о предстоящем импорте (<code>NoteImport</code>); (2) инициализирует <code>hashBv</code> — хэш-таблицу для bit-vector операций, которая используется повсюду далее; (3) если метод использует stub-аргумент (например, при вызове через виртуальный диспетчер), создаёт для него временную переменную <code>lvaStubArgumentVar</code>.`},
+    { num:2, name:'IBC Preparation', cat:'opt', always:false, cond:'JIT_FLAG_BBINSTR',
+      fn:'PHASE_IBCPREP → fgPrepareToInstrumentMethod()', tags:['cond'],
+      desc:`<b>Подготовка к инструментированию счётчиками базовых блоков.</b> Запускается только при <code>JIT_FLAG_BBINSTR</code> — то есть при Tier-0 компиляции с включённым сбором PGO-профиля. Заранее подготавливает flow graph к вставке зондов (счётчиков выполнения блоков и классовых профилей), которые будут добавлены после импорта.`},
+    { num:3, name:'Incorporate Profile', cat:'import', always:true,
+      fn:'PHASE_INCPROFILE → fgIncorporateProfileData()',
+      desc:`<b>Загрузка и применение PGO-данных.</b> Читает ранее собранные данные профилирования (счётчики блоков, классовые профили, Edge-профили) и присваивает веса (<code>bbWeight</code>) каждому базовому блоку. <b>Важно</b>: фаза обязана выполниться <i>до</i> импорта, потому что импортёр принимает решения по инлайнингу с учётом весов. Включает проверки <code>CHECK_PROFILE</code>.`},
+    { num:4, name:'Canonicalize Entry', cat:'import', always:true,
+      fn:'PHASE_CANONICALIZE_ENTRY → fgCanonicalizeFirstBB()',
+      desc:`<b>Приведение первого блока к канонической форме.</b> Гарантирует, что <code>fgFirstBB</code> удовлетворяет инвариантам, которые ожидают все последующие проходы: у него нет предшественников-прыжков извне и он правильно помечен флагами. Активирует проверку <code>CHECK_FG_INIT_BLOCK</code>.`},
+    { num:5, name:'OSR Entry Fix', cat:'import', always:false, cond:'opts.IsOSR()',
+      fn:'(inline) fgFixEntryFlowForOSR()', tags:['cond'],
+      desc:`<b>Перенаправление точки входа для On-Stack Replacement.</b> При OSR-компиляции метод уже частично выполнился в Tier-0. Эта фаза перенаправляет entry block так, чтобы он сразу переходил к нужному IL-смещению (<code>info.compILEntry</code>), минуя код, который уже был выполнен в стеке Tier-0.`},
+  ]
+},
+{
+  group: 'Импорт IL → HIR',
+  gcat: 'import',
+  phases: [
+    { num:6, name:'Importation', cat:'import', always:true,
+      fn:'PHASE_IMPORTATION → fgImport()',
+      desc:`<b>Главная фаза: преобразование IL-байткода в HIR-деревья.</b> Итерирует по каждому базовому блоку и декодирует каждый IL-опкод в узел дерева (<code>GenTree</code>). Строит граф базовых блоков, разбирает exception regions, принимает первичные решения по инлайнингу (GDV), создаёт узлы для вызовов, обращений к полям, арифметики. После этой фазы весь IL представлен в виде деревьев HIR (High-level IR).`},
+    { num:7, name:'Early QMARK Expansion', cat:'morph', always:true,
+      fn:'PHASE_EARLY_QMARK_EXPANSION → fgExpandQmarkNodes(early=true)',
+      desc:`<b>Ранее раскрытие условных выражений <code>GT_QMARK</code>.</b> Узел <code>GT_QMARK</code> — это тернарный оператор <code>?:</code> в виде дерева. Некоторые из них должны быть преобразованы в реальный control-flow (ветки) <i>до</i> инлайнинга, поскольку инлайнер не умеет работать с неразвёрнутыми QMARK-ами.`},
+    { num:8, name:'IBC Instrumentation', cat:'opt', always:false, cond:'JIT_FLAG_BBINSTR',
+      fn:'PHASE_IBCINSTR → fgInstrumentMethod()', tags:['cond'],
+      desc:`<b>Вставка IBC-зондов в IR.</b> Добавляет счётчики выполнения блоков (block-count probes) и классовые профили (class probes) в нужные точки HIR-деревьев. Эти зонды будут выполняться при runtime и накапливать данные для PGO, которые затем используются при Tier-1 компиляции.`},
+    { num:9, name:'Patchpoints', cat:'import', always:true,
+      fn:'PHASE_PATCHPOINTS → fgTransformPatchpoints()',
+      desc:`<b>Раскрытие точек перехода для OSR.</b> Узел <code>GT_PATCHPOINT</code> — это маркер на обратном ребре цикла, означающий «здесь runtime может прервать выполнение Tier-0 кода и переключиться на Tier-1». Фаза преобразует эти маркеры в реальную последовательность проверки и перехода к OSR-версии метода.`},
+    { num:10, name:'Indirect Calls', cat:'morph', always:true,
+      fn:'PHASE_INDXCALL → fgTransformIndirectCalls()',
+      desc:`<b>Преобразование косвенных вызовов с control-flow.</b> Некоторые косвенные вызовы (например, через stub диспетчера виртуальных методов) требуют вставки дополнительного control-flow кода для корректной диспетчеризации. Фаза переписывает соответствующие <code>GT_CALL</code>-узлы в последовательности с ветвлением.`},
+    { num:11, name:'Post-Importation Cleanup', cat:'import', always:true,
+      fn:'PHASE_POST_IMPORT → fgPostImportationCleanup()',
+      desc:`<b>Очистка после импорта.</b> Удаляет базовые блоки, которые не были импортированы (недостижимые из entry) или были импортированы лишь частично (например, обрезанные EH-регионы). Добавляет шаговые блоки для OSR. Финализирует структуру try-регионов.`},
+    { num:12, name:'Async Context Save', cat:'import', always:true,
+      fn:'PHASE_ASYNC_SAVE_CONTEXTS → SaveAsyncContexts()',
+      desc:`<b>Сохранение и восстановление контекстов для async-методов.</b> В async state machine существуют точки suspension (await). Вокруг каждой точки вставляется код, который сохраняет текущий execution context (например, <code>ExecutionContext</code>, <code>SynchronizationContext</code>) перед приостановкой и восстанавливает его после возобновления.`},
+  ]
+},
+{
+  group: 'Morph и инлайнинг',
+  gcat: 'morph',
+  phases: [
+    { num:13, name:'Morph Init', cat:'morph', always:true,
+      fn:'PHASE_MORPH_INIT → fgMorphInit()',
+      desc:`<b>Инициализация структур данных для морфинга.</b> Подготавливает все таблицы и состояния, которые нужны inliner'у и глобальному морфингу: расширяет таблицу локальных переменных (<code>lvaTable</code>), инициализирует tracking для implicit-byref параметров, настраивает флаги для последующих проходов. Обязательно должен запуститься до <code>PHASE_MORPH_INLINE</code>.`},
+    { num:14, name:'Inline Callees', cat:'morph', always:true,
+      fn:'PHASE_MORPH_INLINE → fgInline()',
+      desc:`<b>Инлайнинг вызываемых методов.</b> Используя <code>InlineStrategy</code>, оценивает каждый call-site: вычисляет cost/benefit (размер callee, частота вызова, профиль). Принятые кандидаты импортируются через <code>fgImport</code> (рекурсивно), и их деревья вставляются прямо в вызывающий метод. По окончании вызывается <code>RecordStateAtEndOfInlining()</code>.`},
+    { num:15, name:'Resolve GDVs', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_RESOLVE_GDVS → fgResolveGDVs()', tags:['cond'],
+      desc:`<b>Повторное разрешение Guarded Devirtualization после инлайнинга.</b> Инлайнинг может раскрыть конкретные типы объектов. GDV-охраны (type guards) проверяются заново: если тип теперь определён статически — охрана удаляется, виртуальный вызов заменяется прямым. Улучшает качество дальнейшего инлайнинга и codegen.`},
+    { num:16, name:'DFS Blocks 1', cat:'morph', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_DFS_BLOCKS1 → fgDfsBlocksAndRemove()', tags:['cond'],
+      desc:`<b>Первое удаление мёртвых блоков после инлайнинга.</b> После инлайнинга часть базовых блоков могла стать недостижимой (например, call-site-блок был убран). DFS от entry позволяет выявить и удалить все недостижимые блоки, уменьшая размер IR и ускоряя последующие проходы.`},
+    { num:17, name:'Object Allocator', cat:'opt', always:true,
+      fn:'PHASE_ALLOCATE_OBJECTS → objectAllocator.Run()',
+      desc:`<b>Stack-промоция объектных аллокаций (escape analysis).</b> Анализирует каждый <code>GT_ALLOCOBJ</code> узел (выделение объекта в куче). Если объект <b>не вылетает</b> из метода (не сохраняется в поле, не передаётся по ссылке, не возвращается) — выделение заменяется на stack-аллокацию. Устраняет нагрузку на GC.`},
+    { num:18, name:'Add Internal Blocks', cat:'morph', always:true,
+      fn:'PHASE_MORPH_ADD_INTERNAL → fgAddInternal()',
+      desc:`<b>Добавление служебных блоков компилятора.</b> Вставляет блоки, которых нет в исходном IL, но которые нужны для корректной генерации кода: landing-пады для null-check исключений, блоки для GC-поллинга, вспомогательные блоки для работы с synchronized-методами и т.д.`},
+    { num:19, name:'Swift Error Returns', cat:'morph', always:false, cond:'SWIFT_SUPPORT',
+      fn:'PHASE_SWIFT_ERROR_RET → fgAddSwiftErrorReturns()', tags:['swift'],
+      desc:`<b>Поддержка Swift error-handling ABI.</b> Только при <code>SWIFT_SUPPORT</code>. Переписывает узлы <code>GT_RETURN</code> в <code>GT_SWIFT_ERROR_RET</code> для методов с Swift error-handling соглашением. Swift передаёт ошибки через специальный регистр <code>x21</code> (arm64), что требует особой обработки точек возврата.`},
+    { num:20, name:'Promote Structs', cat:'morph', always:true,
+      fn:'PHASE_PROMOTE_STRUCTS → fgPromoteStructs()',
+      desc:`<b>Скалярная промоция struct-переменных.</b> Анализирует struct-локали и разбивает их на отдельные скалярные поля, если это выгодно. Например, <code>Point { int x, y }</code> превращается в две независимые переменные <code>V_x</code> и <code>V_y</code>. Уменьшает нагрузку на память и позволяет распределить поля по регистрам.`},
+    { num:21, name:'DFS Blocks 2', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_DFS_BLOCKS2 → fgDfsBlocksAndRemove()', tags:['cond'],
+      desc:`<b>Второе удаление мёртвых блоков.</b> Повторяет DFS-очистку перед local morph, поскольку предыдущие фазы (promote structs, head/tail merge) могли создать новые недостижимые блоки.`},
+    { num:22, name:'Local Morph', cat:'morph', always:true,
+      fn:'PHASE_LOCAL_MORPH → fgLocalMorph()',
+      desc:`<b>Упрощение обращений к локальным переменным и анализ address-exposure.</b> Переписывает паттерны вида <code>ADDR(LCL_VAR)</code>, нормализует indirections через локали. <b>Ключевой результат</b>: помечает каждую переменную как <i>address-exposed</i> (если её адрес берётся), что впоследствии запрещает её размещение в регистр. Готовит IR к построению SSA.`},
+    { num:23, name:'Optimize Mask Conversions', cat:'opt', always:true,
+      fn:'PHASE_OPTIMIZE_MASK_CONVERSIONS → fgOptimizeMaskConversions()',
+      desc:`<b>Удаление избыточных конвертаций mask↔scalar для векторных переменных.</b> При работе с SIMD/векторными типами часто возникают пары «преобразуй в маску → преобразуй обратно», которые взаимно уничтожаются. Фаза ищет и удаляет такие пары на уровне локальных переменных.`},
+    { num:24, name:'Early Liveness', cat:'ssa', always:true,
+      fn:'PHASE_EARLY_LIVENESS → fgEarlyLiveness()',
+      desc:`<b>Ранний анализ живучести переменных.</b> Вычисляет множества <code>USE</code> и <code>DEF</code> для каждого базового блока, затем итеративно рассчитывает <code>liveIn/liveOut</code> для всего графа. Используется фазами <i>Forward Substitution</i> и <i>Global Morph</i>. Данные актуальны до конца global morph.`},
+    { num:25, name:'Forward Substitution', cat:'opt', always:true,
+      fn:'PHASE_FWD_SUB → fgForwardSub()',
+      desc:`<b>Прямая подстановка одноразовых временных переменных.</b> Ищет паттерн: <code>t = expr; ...; use(t)</code>, где <code>t</code> используется ровно один раз и нет побочных эффектов между присвоением и использованием. Заменяет использование на <code>use(expr)</code>, убирая временную. Уменьшает нагрузку на LSRA.`},
+    { num:26, name:'Physical Promotion', cat:'morph', always:true,
+      fn:'PHASE_PHYSICAL_PROMOTION → PhysicalPromotion()',
+      desc:`<b>Промоция struct-переменных по физическому паттерну доступа.</b> Второй pass промоции, дополняющий <i>Promote Structs</i>. Вместо именованных полей анализирует фактические загрузки/сохранения по конкретным байтовым смещениям и создаёт «физические» скалярные переменные, соответствующие реальному паттерну использования памяти.`},
+    { num:27, name:'Implicit ByRef Copy Omission', cat:'morph', always:true,
+      fn:'PHASE_IMPBYREF_COPY_OMISSION → fgMarkImplicitByRefCopyOmissionCandidates()',
+      desc:`<b>Устранение копий для implicit-byref параметров.</b> В .NET struct-аргументы, передаваемые по значению в большие методы, могут передаваться как implicit byref (pointer). Эта фаза помечает позиции последнего использования таких параметров, чтобы на ABI-уровне можно было не делать defensive copy при вызове.`},
+    { num:28, name:'Retype Implicit ByRefs', cat:'morph', always:true,
+      fn:'PHASE_MORPH_IMPBYREF → fgRetypeImplicitByRefArgs()',
+      desc:`<b>Переработка типов implicit-byref параметров.</b> Применяет обновление типов для параметров, выбранных на предыдущей фазе. Решает, какие struct-промоции оставить (потребуют копирующей инициализации) и какие отбросить. Последняя возможность изменить промоции до global morph.`},
+    { num:29, name:'Global Morph', cat:'morph', always:true,
+      fn:'PHASE_MORPH_GLOBAL → fgMorphBlocks()',
+      desc:`<b>Главный проход морфинга — нормализация всего HIR.</b> Обходит каждое дерево в каждом блоке и выполняет: свёртку констант (<i>constant folding</i>), упрощение операторов, call lowering, раскрытие оставшихся QMARK-узлов, нормализацию типов, удаление мёртвых деревьев. Самый объёмный одиночный проход: после него IR значительно более «плоский» и готов к SSA.`},
+    { num:30, name:'Post Morph', cat:'morph', always:true,
+      fn:'PHASE_POST_MORPH → postMorphPhase()',
+      desc:`<b>Финализация после глобального морфинга.</b> Выполняет несколько завершающих действий: (1) фиксирует демотированные implicit-byref промоции; (2) вызывает <code>fgSetOptions()</code> — определяет режим GC (interruptible/non-interruptible) и другие параметры кодогенерации; (3) раскрывает поздние QMARK-узлы; (4) включает проверку <code>CHECK_IR</code>.`},
+    { num:31, name:'Compute Block Weights', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_COMPUTE_BLOCK_WEIGHTS → fgComputeBlockWeights()', tags:['cond'],
+      desc:`<b>Вычисление весов базовых блоков.</b> На основе profile-данных (или синтетических эвристик) вычисляет <code>bbWeight</code> для каждого блока. Эти веса используются layout-алгоритмом для упорядочивания блоков, алгоритмом выравнивания циклов и решениями по инлайнингу.`},
+  ]
+},
+{
+  group: 'Обработка исключений (EH)',
+  gcat: 'eh',
+  phases: [
+    { num:32, name:'Remove Empty Try', cat:'eh', always:true,
+      fn:'PHASE_EMPTY_TRY → fgRemoveEmptyTry()',
+      desc:`<b>Удаление пустых try/finally блоков.</b> Если тело <code>try</code> оказалось пустым после импорта или морфинга, то вся конструкция <code>try/finally</code> не несёт смысла. Удаление упрощает EH-таблицу и открывает возможности для оптимизации control-flow. Эта фаза выполняется трижды (раунды 1, 2, 3).`},
+    { num:33, name:'Remove Empty Try/Catch/Fault', cat:'eh', always:true,
+      fn:'PHASE_EMPTY_TRY_CATCH_FAULT → fgRemoveEmptyTryCatchOrTryFault()',
+      desc:`<b>Удаление пустых try/catch и try/fault блоков.</b> Пустые handler'ы не обрабатывают исключений, их можно удалить, сократив EH-таблицу. Применяется в трёх раундах.`},
+    { num:34, name:'Remove Empty Finally', cat:'eh', always:true,
+      fn:'PHASE_EMPTY_FINALLY → fgRemoveEmptyFinally()',
+      desc:`<b>Удаление пустых finally-блоков.</b> После морфинга finally-блок может свестись к no-op. Удаление избавляет от накладных расходов EH-диспетчеризации. Применяется трижды.`},
+    { num:35, name:'Merge Finally Chains', cat:'eh', always:true,
+      fn:'PHASE_MERGE_FINALLY_CHAINS → fgMergeFinallyChains()',
+      desc:`<b>Объединение цепочек вложенных finally.</b> Вложенные try/finally создают «цепочки» вызовов handler'ов. Если несколько finally-регионов имеют одинаковый handler, их вызовы объединяются в один путь. Уменьшает количество <code>BBJ_CALLFINALLY</code> блоков и сокращает EH-таблицу.`},
+    { num:36, name:'Clone Finally', cat:'eh', always:true,
+      fn:'PHASE_CLONE_FINALLY → fgCloneFinally()',
+      desc:`<b>Клонирование finally-тела на нормальный путь.</b> Маленький finally-блок клонируется непосредственно в нормальный (не-исключительный) путь выполнения вместо вызова handler'а через EH-механизм. Вместо <code>CALLFINALLY → handler → ret</code> получается inline-копия тела finally перед return. Устраняет overhead EH-диспетчеризации для типичного случая.`},
+    { num:37, name:'Head/Tail Merge 1', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_HEAD_TAIL_MERGE → fgHeadTailMerge(restructure=true)', tags:['cond'],
+      desc:`<b>Факторизация дублирующихся последовательностей операторов.</b> Находит sibling-блоки (с общим предшественником или преемником), которые начинаются/заканчиваются одинаковыми statement'ами. Выносит общий код в отдельный блок, ликвидируя дублирование. Первый вызов разрешает реструктурирование графа.`},
+    { num:38, name:'Merge Throw Blocks', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_MERGE_THROWS → fgTailMergeThrows()', tags:['cond'],
+      desc:`<b>Дедупликация блоков с одинаковыми throw-последовательностями.</b> Если в разных местах метода генерируется один и тот же throw-хелпер (например, несколько <code>throw new NullReferenceException()</code>), эти блоки объединяются в один разделяемый. Уменьшает размер кода.`},
+    { num:39, name:'Early Flow Graph Update', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_EARLY_UPDATE_FLOW_GRAPH → fgUpdateFlowGraphPhase()', tags:['cond'],
+      desc:`<b>Ранняя упрощение графа управления потоком.</b> Вызывает <code>fgUpdateFlowGraph()</code>: удаляет пустые pass-through блоки, объединяет цепочки блоков «один вход — один выход», удаляет недостижимые блоки. Компактный CFG ускоряет все последующие проходы.`},
+    { num:40, name:'Remove Empty Finally 2', cat:'eh', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_EMPTY_FINALLY_2', tags:['cond'],
+      desc:`<b>Второй раунд удаления пустых finally.</b> Фазы оптимизации (merge, clone) могли создать новые пустые finally-блоки. Повторный проход удаляет их.`},
+    { num:41, name:'Remove Empty Try 2', cat:'eh', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_EMPTY_TRY_2', tags:['cond'],
+      desc:`<b>Второй раунд удаления пустых try/finally.</b>`},
+    { num:42, name:'Remove Empty Try/Catch/Fault 2', cat:'eh', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_EMPTY_TRY_CATCH_FAULT_2', tags:['cond'],
+      desc:`<b>Второй раунд удаления пустых try/catch/fault.</b>`},
+  ]
+},
+{
+  group: 'Анализ и оптимизация циклов',
+  gcat: 'loop',
+  phases: [
+    { num:43, name:'Optimize Flow', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_OPTIMIZE_FLOW → optOptimizeFlow()', tags:['cond'],
+      desc:`<b>Оптимизация управляющего потока без перестановки блоков.</b> Удаляет ветви, результат которых доказуемо известен из доминаторного контекста; упрощает switch-диспетчеризацию; убирает redundant conditional jumps. Не переставляет блоки — это делает layout-фаза позже.`},
+    { num:44, name:'Head/Tail Merge 2', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_HEAD_TAIL_MERGE2 → fgHeadTailMerge(restructure=false)', tags:['cond'],
+      desc:`<b>Второй проход факторизации дублирующихся последовательностей.</b> Тот же алгоритм, но без реструктурирования графа — только слияние statement'ов без изменения топологии CFG.`},
+    { num:45, name:'DFS Blocks 3', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_DFS_BLOCKS3 → fgDfsBlocksAndRemove()', tags:['cond'],
+      desc:`<b>Третье удаление мёртвых блоков.</b> После <i>Optimize Flow</i> и <i>Head/Tail Merge</i> часть блоков стала недостижимой. DFS-очистка убирает их перед поиском естественных циклов.`},
+    { num:46, name:'Adjust Throw Edge Likelihoods', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_ADJUST_THROW_LIKELIHOODS → ProfileSynthesis::AdjustThrowEdgeLikelihoods()', tags:['cond'],
+      desc:`<b>Корректировка вероятностей рёбер, ведущих к throw.</b> Эвристически синтезированные вероятности рёбер могут быть неточными у throw-ветвей. Фаза занижает вероятность «исключительных» рёбер (ведущих к <code>throw</code>), делая их «холодными». Это улучшает layout и предсказание ветвлений.`},
+    { num:47, name:'Find Loops', cat:'loop', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_FIND_LOOPS → optFindLoopsPhase()', tags:['cond'],
+      desc:`<b>Поиск и классификация естественных циклов.</b> Запускает <code>FlowGraphNaturalLoops::Find()</code> на основе DFS-дерева. Находит все backedge'ы, строит <code>FlowGraphNaturalLoop</code> для каждого заголовка. Аннотирует блоки: header, члены цикла, entry/exit/back рёбра. Вычисляет induction variables. Результат используют все loop-оптимизации.`},
+    { num:48, name:'Repair Profile (post-morph)', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_REPAIR_PROFILE_POST_MORPH → fgRepairProfile()', tags:['cond'],
+      desc:`<b>Восстановление консистентности профиля после морфинга.</b> Инлайнинг, морфинг и оптимизации могли нарушить инварианты профиля (сумма весов рёбер не равна весу блока). Пересчитывает веса, используя синтетическую пропорциональную нормализацию.`},
+    { num:49, name:'Invert Loops', cat:'loop', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_INVERT_LOOPS → optInvertLoops()', tags:['cond'],
+      desc:`<b>Инверсия циклов: while → do-while.</b> Дублирует условие цикла в preheader-блок, превращая <code>while(cond) { body }</code> в <code>if(cond) do { body } while(cond)</code>. Тело становится самостоятельным замкнутым self-loop'ом: это улучшает предсказание ветвей, упрощает анализ инвариантов и позволяет loop-alignment работать эффективнее.`},
+    { num:50, name:'Set Block Weights', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_SET_BLOCK_WEIGHTS → optSetBlockWeights()', tags:['cond'],
+      desc:`<b>Масштабирование весов блоков и маркировка редко выполняемых.</b> Применяет итоговые веса выполнения к каждому базовому блоку. Блоки с очень низким весом помечаются <code>BBF_RUN_RARELY</code> — они попадут в «холодную» секцию кода. Критичны для алгоритма layout и выравнивания циклов.`},
+    { num:51, name:'Clone Loops', cat:'loop', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_CLONE_LOOPS → optCloneLoops()', tags:['cond'],
+      desc:`<b>Клонирование циклов с оптимизационными возможностями.</b> Создаёт две копии цикла: «быструю» (оптимизированную, с убранными проверками) и «медленную» (безопасную). Добавляет runtime-охрану, которая выбирает быстрый путь, когда выполнены нужные условия (например, нет aliasing). Используется для bounds-check elimination через loop cloning.`},
+    { num:52, name:'Unroll Loops', cat:'loop', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_UNROLL_LOOPS → optUnrollLoops()', tags:['cond'],
+      desc:`<b>Размотка циклов с известным числом итераций.</b> Если число итераций цикла известно на этапе компиляции и достаточно мало, тело цикла дублируется N раз, и backedge устраняется. Ликвидирует overhead ветвления цикла и открывает возможности для дальнейшей оптимизации (например, auto-vectorization).`},
+    { num:53, name:'Compute Dominators', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_COMPUTE_DOMINATORS → fgComputeDominators()', tags:['cond'],
+      desc:`<b>Построение дерева доминаторов.</b> Для каждого блока вычисляет его немедленного доминатора (idom) алгоритмом Lengauer-Tarjan. Дерево доминаторов необходимо для: построения SSA (вычисление dominance frontier), loop-invariant code motion, VN-based redundant branch elimination.`},
+  ]
+},
+{
+  group: 'SSA, Value Numbering и оптимизационный цикл',
+  gcat: 'ssa',
+  phases: [
+    { num:54, name:'Mark Local Vars', cat:'morph', always:true,
+      fn:'PHASE_MARK_LOCAL_VARS → lvaMarkLocalVars()',
+      desc:`<b>Подсчёт обращений к локальным переменным.</b> Итерирует все деревья и считает <code>refCount</code> (число обращений) и <code>refCountWtd</code> (взвешенное с учётом частоты блока) для каждой переменной. После этой фазы переменные считаются «ref-counted», что используется LSRA для решений о регистровом размещении.`},
+    { num:55, name:'Find Oper Order', cat:'morph', always:true,
+      fn:'PHASE_FIND_OPER_ORDER → fgFindOperOrder()',
+      desc:`<b>Определение порядка вычисления подвыражений.</b> Расставляет флаги порядка вычисления в деревьях: учитывает зависимости по данным, определяет где необходимы barrier'ы для сторонних эффектов. Результат используется при weaving (формировании linked list узлов) на следующей фазе.`},
+    { num:56, name:'Set Block Order', cat:'morph', always:true,
+      fn:'PHASE_SET_BLOCK_ORDER → fgSetBlockOrder()',
+      desc:`<b>Формирование linked-list узлов и определение режима GC.</b> «Вплетает» (weaves) узлы каждого дерева в двусвязный список в порядке вычисления. <code>fgNodeThreading = AllTrees</code>. <b>Критично</b>: обнаруживает циклы без GC-safe точек и помечает метод как <i>fully interruptible</i> — GC может остановить поток в любой инструкции.`},
+    { num:57, name:'Build SSA', cat:'ssa', always:false, cond:'OptimizationEnabled (doSsa)',
+      fn:'PHASE_BUILD_SSA → fgSsaBuild()', tags:['cond','repeat'],
+      desc:`<b>Построение Static Single Assignment формы.</b> Классический SSA-алгоритм: (1) вычисляет <i>dominance frontier</i> для каждого блока; (2) вставляет Φ-функции (phi-nodes) в join-точки для переменных живых на нескольких путях; (3) переименовывает все определения и использования переменных, добавляя SSA-суффиксы (<code>V05.1</code>, <code>V05.2</code> и т.д.). Основа для VN, copy-prop, CSE и assertion prop.`},
+    { num:58, name:'Early Propagation', cat:'opt', always:false, cond:'OptimizationEnabled (doEarlyProp)',
+      fn:'PHASE_EARLY_PROP → optEarlyProp()', tags:['cond','repeat'],
+      desc:`<b>Ранняя пропаганда длин массивов и типов объектов.</b> До value numbering распространяет известные значения <code>GT_ARR_LENGTH</code> в точки использования. Также разрешает вызовы <code>obj.GetType()</code> если тип объекта статически известен. Улучшает качество VN (value numbers станут более точными).`},
+    { num:59, name:'Value Number', cat:'ssa', always:false, cond:'OptimizationEnabled (doValueNum)',
+      fn:'PHASE_VALUE_NUMBER → fgValueNumber()', tags:['cond','repeat'],
+      desc:`<b>Value Numbering — ядро большинства оптимизаций.</b> Присваивает каждому узлу IR уникальный <i>value number</i> (VN). Два узла с одинаковым VN гарантированно вычисляют одинаковое значение. Поддерживает: числовые константы, операции над VN (ADD, MUL...), PHI-функции, memory VN (alias analysis). Все последующие оптимизации — CSE, copy-prop, redundant branch, assertion prop — работают через VN.`},
+    { num:60, name:'Hoist Loop Code (LICM)', cat:'loop', always:false, cond:'OptimizationEnabled (doLoopHoisting)',
+      fn:'PHASE_HOIST_LOOP_CODE → optHoistLoopCode()', tags:['cond','repeat'],
+      desc:`<b>Вынос loop-invariant выражений из циклов.</b> Обходит все деревья внутри циклов и ищет узлы, чей VN не меняется от итерации к итерации. Такие узлы переносятся в preheader-блок, где вычисляются один раз. Например: <code>a.Length</code> внутри цикла выносится наружу, если массив <code>a</code> не изменяется в цикле.`},
+    { num:61, name:'VN Copy Propagation', cat:'opt', always:false, cond:'OptimizationEnabled (doCopyProp)',
+      fn:'PHASE_VN_COPY_PROP → optVnCopyProp()', tags:['cond','repeat'],
+      desc:`<b>Замена переменных их копиями на основе VN.</b> Если две переменные имеют одинаковый VN (гарантированно содержат одно значение), все использования одной заменяются другой. Пример: после <code>b = a; use(b)</code> → <code>use(a)</code>. Уменьшает число переменных и открывает пути для constant folding.`},
+    { num:62, name:'Redundant Branch Opts', cat:'opt', always:false, cond:'OptimizationEnabled (doBranchOpt)',
+      fn:'PHASE_OPTIMIZE_BRANCHES → optRedundantBranches()', tags:['cond','repeat'],
+      desc:`<b>Удаление ветвей, чей результат предопределён.</b> Если условие ветви в блоке B имеет тот же VN, что и уже проверенное условие в доминирующем блоке D — результат ветви в B известен. Ветвь заменяется безусловным переходом. Уменьшает количество ветвлений и открывает пути для DCE.`},
+    { num:63, name:'CSE', cat:'opt', always:false, cond:'OptimizationEnabled (doCse)',
+      fn:'PHASE_OPTIMIZE_VALNUM_CSES → optOptimizeCSEs()', tags:['cond','repeat'],
+      desc:`<b>Устранение общих подвыражений (Common Subexpression Elimination).</b> Находит выражения с одинаковым VN, которые вычисляются более одного раза. Выносит первое вычисление в CSE-временную переменную, а все повторные — заменяет чтением этой переменной. Пример: <code>a[i+1]</code>, встречающийся 3 раза — вычислится один раз.`},
+    { num:64, name:'Assertion Propagation', cat:'opt', always:false, cond:'OptimizationEnabled (doAssertionProp)',
+      fn:'PHASE_ASSERTION_PROP_MAIN → optAssertionPropMain()', tags:['cond','repeat'],
+      desc:`<b>Пропаганда утверждений о значениях переменных.</b> При обходе conditional-ветвей компилятор фиксирует «утверждения»: на ветви <code>if (x &gt; 0)</code> известно, что <code>x &gt; 0</code>. Эти утверждения распространяются вперёд по доминированию и используются для: упрощения условий, исключения null-check, сужения диапазонов для range analysis.`},
+    { num:65, name:'Optimize Index Checks', cat:'opt', always:false, cond:'OptimizationEnabled (doRangeAnalysis)',
+      fn:'PHASE_OPTIMIZE_INDEX_CHECKS → rangeCheckPhase()', tags:['cond','repeat'],
+      desc:`<b>Устранение проверок выхода за границы массива через range analysis.</b> На основе assertion prop и SSA-диапазонов индексов определяет, гарантированно ли индекс находится в диапазоне <code>[0, arr.Length)</code>. Если да — bounds-check ветвь удаляется. Применяется для loop-канонических паттернов вида <code>for(i=0; i&lt;arr.Length; i++)</code>.`},
+    { num:66, name:'Optimize Induction Variables', cat:'loop', always:false, cond:'OptimizationEnabled (doOptimizeIVs)',
+      fn:'PHASE_OPTIMIZE_INDUCTION_VARIABLES → optInductionVariables()', tags:['cond','repeat'],
+      desc:`<b>Оптимизация индукционных переменных цикла.</b> Анализирует первичные и производные индукционные переменные. Выполняет: (1) <i>strength reduction</i> — заменяет умножение на сложение (<code>i*4</code> → инкремент на 4); (2) <i>widening</i> — расширяет 32-bit IV до 64-bit если это убирает знаковое расширение; (3) рассматривает конвертацию в нисходящий счётчик.`},
+    { num:67, name:'VN Dead Store Removal', cat:'opt', always:false, cond:'OptimizationEnabled (doVNBasedDeadStoreRemoval)',
+      fn:'PHASE_VN_BASED_DEAD_STORE_REMOVAL → optVNBasedDeadStoreRemoval()', tags:['cond','repeat'],
+      desc:`<b>Удаление «мёртвых» записей через Value Numbering.</b> Запись в переменную считается «мёртвой», если то же значение уже было там (тот же VN), либо если переменная перезаписывается раньше, чем читается. Эта фаза инвалидирует SSA и VN узлов — поэтому всегда последняя в оптимизационном цикле.`},
+    { num:68, name:'Range Check Cloning', cat:'opt', always:false, cond:'OptimizationEnabled (doRangeCheckCloning)',
+      fn:'PHASE_RANGE_CHECK_CLONING → optRangeCheckCloning()', tags:['cond','repeat'],
+      desc:`<b>Клонирование блоков с последовательными bounds-check.</b> Если за одной проверкой выхода за границу идут другие, и их индексы линейно связаны, блок клонируется: в одной ветви первая проверка заменяет все последующие (они доказуемо выполнены). Открывает возможность удалить redundant проверки.`},
+    { num:69, name:'VN Intrinsic Expansion', cat:'opt', always:false, cond:'OptimizationEnabled (doVNBasedIntrinExpansion)',
+      fn:'PHASE_VN_BASED_INTRINSIC_EXPAND → fgVNBasedIntrinsicExpansion()', tags:['cond','repeat'],
+      desc:`<b>Раскрытие intrinsics с известными VN-аргументами.</b> Если аргументы intrinsic-вызова (<code>Math.Abs</code>, <code>BitOperations.PopCount</code> и т.д.) имеют конкретные VN (константы или доказанные диапазоны), intrinsic заменяется более эффективной формой или константным результатом.`},
+    { num:70, name:'Opt Flow Graph Update', cat:'opt', always:false, cond:'OptimizationEnabled && fgModified',
+      fn:'PHASE_OPT_UPDATE_FLOW_GRAPH → fgUpdateFlowGraphPhase()', tags:['cond'],
+      desc:`<b>Обновление CFG если оптимизации изменили граф.</b> Если хотя бы одна оптимизация выставила флаг <code>fgModified = true</code>, запускается <code>fgUpdateFlowGraph</code>: компактирует граф, удаляет пустые/недостижимые блоки. Необходимо перед следующей итерацией opt-цикла (при <code>JitOptRepeat</code>).`},
+  ]
+},
+{
+  group: 'Подготовка к backend и lowering',
+  gcat: 'codegen',
+  phases: [
+    { num:71, name:'Stress Split Tree', cat:'debug', always:false, cond:'DEBUG only',
+      fn:'PHASE_STRESS_SPLIT_TREE → StressSplitTree()', tags:['debug'],
+      desc:`<b>[DEBUG] Стресс-тестирование функции разбиения деревьев.</b> При включённых stress-режимах (<code>STRESS_SPLIT_TREES_RANDOMLY</code>, <code>STRESS_SPLIT_TREES_REMOVE_COMMAS</code>) намеренно разбивает деревья случайным образом. Цель: убедиться, что <code>gtSplitTree</code> корректна в нестандартных случаях. Никогда не выполняется в production.`},
+    { num:72, name:'Remove Empty Finally 3', cat:'eh', always:true,
+      fn:'PHASE_EMPTY_FINALLY_3',
+      desc:`<b>Третий раунд удаления пустых finally.</b> Фазы второго раунда оптимизаций (CSE, assertion prop, IV opts) могут оставить новые пустые finally-блоки. Финальная зачистка перед созданием funclets.`},
+    { num:73, name:'Remove Empty Try 3', cat:'eh', always:true,
+      fn:'PHASE_EMPTY_TRY_3',
+      desc:`<b>Третий раунд удаления пустых try/finally.</b> Финальная зачистка перед <code>fgCreateFunclets</code>.`},
+    { num:74, name:'Remove Empty Try/Catch/Fault 3', cat:'eh', always:true,
+      fn:'PHASE_EMPTY_TRY_CATCH_FAULT_3',
+      desc:`<b>Третий раунд удаления пустых try/catch/fault.</b> Финальная зачистка EH-таблицы.`},
+    { num:75, name:'Create EH Funclets', cat:'eh', always:true,
+      fn:'PHASE_CREATE_FUNCLETS → fgCreateFunclets()',
+      desc:`<b>Преобразование EH-handler'ов в funclets.</b> На платформах x64 и arm64 каждый EH-handler оформляется как отдельная «под-функция» (funclet) с собственным прологом, эпилогом и frame pointer. Соответствует Windows x64 и arm64 EH ABI. После этой фазы структура EH финализирована (<code>ehTableFinalized = true</code>).`},
+    { num:76, name:'Expand Casts', cat:'morph', always:true,
+      fn:'PHASE_EXPAND_CASTS → fgLateCastExpansion()',
+      desc:`<b>Позднее раскрытие cast-операций.</b> Некоторые приведения типов (checked casts, конвертации float↔int с проверкой диапазона) требуют helper-вызовов или control-flow. Фаза вставляет нужный код, не затрагивая SSA (она уже завершена и демонтирована).`},
+    { num:77, name:'Expand Runtime Lookups', cat:'morph', always:true,
+      fn:'PHASE_EXPAND_RTLOOKUPS → fgExpandRuntimeLookups()',
+      desc:`<b>Раскрытие generic-словарных lookup'ов.</b> Доступ к generic-специализациям требует lookup в «generic dictionary». Раскрывается в: inline fast-path (проверить слот в словаре) + slow-path вызов хелпера. Стандартная двухуровневая оптимизация для generic-dispatch.`},
+    { num:78, name:'Expand Static Init', cat:'morph', always:true,
+      fn:'PHASE_EXPAND_STATIC_INIT → fgExpandStaticInit()',
+      desc:`<b>Частичный инлайнинг инициализаторов статических классов.</b> Доступ к статическому полю требует убедиться, что класс инициализирован (cctor вызван). Вместо полного вызова хелпера вставляется inline-проверка флага инициализации: если класс уже инициализирован (типичный случай) — вызов хелпера не происходит.`},
+    { num:79, name:'Expand Thread Local Access', cat:'morph', always:true,
+      fn:'PHASE_EXPAND_TLS → fgExpandThreadLocalAccess()',
+      desc:`<b>Раскрытие доступа к thread-local storage.</b> Обращения к полям <code>[ThreadStatic]</code> требуют платформозависимой последовательности для получения thread-local адреса. Заменяет абстрактные TLS-узлы на конкретные инструкции: чтение через <code>fs:</code>/<code>gs:</code> на x86, через <code>tpidr_el0</code> на arm64.`},
+    { num:80, name:'Expand Stack Array Alloc', cat:'morph', always:true,
+      fn:'PHASE_EXPAND_STACK_ARR → fgExpandStackArrayAllocations()',
+      desc:`<b>Раскрытие stack-аллокаций массивов.</b> Если <i>Object Allocator</i> ранее решил разместить массив на стеке, этот узел раскрывается в реальное резервирование стекового пространства, инициализацию заголовка массива (type pointer, length) и выравнивание.`},
+    { num:81, name:'Insert GC Polls', cat:'codegen', always:true,
+      fn:'PHASE_INSERT_GC_POLLS → fgInsertGCPolls()',
+      desc:`<b>Вставка GC poll-точек для возможности приостановки потока.</b> GC должен уметь остановить любой поток (stop-the-world). Для tight loops без вызовов поток может долго не доходить до safe-point. В таких местах вставляется GC poll — проверка «не нужно ли приостановиться». На большинстве платформ это conditional call к хелперу.`},
+    { num:82, name:'Switch Recognition', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_SWITCH_RECOGNITION → optRecognizeAndOptimizeSwitchJumps()', tags:['cond'],
+      desc:`<b>Распознавание и оптимизация switch-паттернов.</b> Ищет цепочки <code>if/else if</code>, проверяющих одну переменную, и конвертирует их в switch-инструкцию с jump-таблицей. Также выполняет <i>switch peeling</i> — вынос наиболее частого случая в отдельную ветвь для уменьшения среднего числа проверок.`},
+    { num:83, name:'Optimize Bools', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_OPTIMIZE_BOOLS → optOptimizeBools()', tags:['cond'],
+      desc:`<b>Объединение соседних условных переходов в составные условия.</b> Находит смежные блоки <code>BBJ_COND</code>, проверяющие один и тот же базовый bool-паттерн, и сливает их в единую инструкцию <code>AND/OR</code>. Пример: <code>if(a) if(b)</code> → <code>if(a &amp;&amp; b)</code>. Сокращает число ветвлений.`},
+    { num:84, name:'If Conversion (CSEL/CMOV)', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_IF_CONVERSION → optIfConversion()', tags:['cond'],
+      desc:`<b>Преобразование if/else в условные инструкции без ветвлений.</b> Распознаёт «diamond»-паттерн CFG: <code>if(cond) x=a else x=b</code> с небольшими телами без сторонних эффектов. Заменяет ветви единственной инструкцией условного выбора (<code>CSEL</code> на arm64, <code>CMOV</code> на x86-64). Устраняет branch-misprediction penalty.`},
+    { num:85, name:'Optimize Pre-Layout', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_OPTIMIZE_PRE_LAYOUT → optOptimizePreLayout()', tags:['cond'],
+      desc:`<b>Финальная оптимизация CFG перед перестановкой блоков.</b> Последняя возможность компактировать граф: объединяет single-predecessor/single-successor цепочки, удаляет pass-through блоки, чистит jump-таблицы. Передаёт layout-алгоритму максимально чистый граф.`},
+    { num:86, name:'Repair Profile (pre-layout)', cat:'opt', always:false, cond:'OptimizationEnabled',
+      fn:'PHASE_REPAIR_PROFILE_PRE_LAYOUT → fgRepairProfile()', tags:['cond'],
+      desc:`<b>Финальная коррекция профиля перед backend'ом.</b> Последняя проверка консистентности весов профиля перед тем, как backend начнёт принимать решения по layout. Гарантирует, что сумма весов рёбер каждого блока соответствует его весу.`},
+    { num:87, name:'Rationalize IR  (HIR → LIR)', cat:'codegen', always:true,
+      fn:'PHASE_RATIONALIZE → Rationalizer::Run()',
+      desc:`<b>Преобразование HIR в LIR — ключевой переход для backend'а.</b> <code>Rationalizer</code> конвертирует дерево-ориентированный HIR в линеаризованный LIR: вместо вложенных деревьев — двусвязный список узлов на блок, где каждый узел — отдельная «инструкция». После: <code>fgNodeThreading = LIR</code>. Структура готова для Lowering и LSRA.`},
+    { num:88, name:'Async Transform', cat:'morph', always:false, cond:'compIsAsync()',
+      fn:'PHASE_ASYNC → TransformAsync()', tags:['cond'],
+      desc:`<b>Трансформация async state machine в LIR.</b> Только для async-методов. После рационализации преобразует пути возобновления async state machine: вставляет корректные восстановления состояния, обрабатывает suspension points в LIR-форме.`},
+    { num:89, name:'GS Cookie', cat:'codegen', always:true,
+      fn:'PHASE_GS_COOKIE → gsPhase()',
+      desc:`<b>Защита от переполнения стекового буфера (GS cookie).</b> Если метод содержит небезопасные буферы на стеке (которые могут быть переполнены), вставляется GS security cookie: случайное значение сохраняется в прологе и проверяется в эпилоге. Несовпадение → вызов <code>__fastfail</code>. Аналог MSVC /GS.`},
+    { num:90, name:'WASM SCC Transform', cat:'codegen', always:false, cond:'TARGET_WASM',
+      fn:'PHASE_WASM_TRANSFORM_SCCS → fgWasmTransformSccs()', tags:['wasm'],
+      desc:`<b>[WebAssembly] Приведение SCC к reducible flow.</b> WebAssembly требует structured control flow (нельзя произвольные jumps). Если CFG содержит strongly-connected компоненты с нередуцируемым потоком — они преобразуются в эквивалентную reducible форму с помощью node-splitting или Wasm-специфических конструкций.`},
+    { num:91, name:'Lowering', cat:'codegen', always:true,
+      fn:'PHASE_LOWERING → Lowering::Run()',
+      desc:`<b>Целевое снижение уровня абстракции IR.</b> Самая платформозависимая фаза до LSRA. Переписывает LIR-узлы в целевые операции: формирует x86-адресные режимы (<code>[base+index*scale+disp]</code>), выбирает <code>LDP/STP</code> пары на arm64. Размечает узлы как <i>containable</i> — чтобы LSRA не выделял под них отдельный регистр. Обрабатывает: вызовы, возвраты, switch, операции с памятью.`},
+    { num:92, name:'Linear Scan RA  (LSRA)', cat:'codegen', always:true,
+      fn:'PHASE_LINEAR_SCAN → m_regAlloc->doRegisterAllocation()',
+      desc:`<b>Линейное сканирование — распределение физических регистров.</b> Строит «живые интервалы» для каждого значения (от определения до последнего использования). Линейно проходит блоки в порядке layout'а, назначает физические регистры. При конфликтах — выполняет spill/reload в стек. Учитывает: calling conventions, fixed-register узлы (параметры, возвращаемые значения), platform constraints.`},
+    { num:93, name:'Optimize Layout', cat:'codegen', always:false, cond:'OptimizationEnabled (non-WASM)',
+      fn:'PHASE_OPTIMIZE_LAYOUT → fgSearchImprovedLayout()', tags:['cond'],
+      desc:`<b>Перестановка базовых блоков для оптимального layout'а.</b> Profile-guided chain building: строит «цепочки» блоков, которые должны быть расположены последовательно, минимизируя взятые переходы. Цель: наиболее горячие пути выполнения идут линейно без <code>jmp</code>-инструкций, что улучшает I-cache utilization.`},
+    { num:94, name:'Optimize Post-Layout', cat:'codegen', always:false, cond:'OptimizationEnabled (non-WASM)',
+      fn:'PHASE_OPTIMIZE_POST_LAYOUT → optOptimizePostLayout()', tags:['cond'],
+      desc:`<b>Оптимизации после финального layout'а.</b> Peephole-оптимизации, зависящие от окончательного порядка блоков: разворот условий для устранения <code>jmp</code> через следующий блок, оптимизация branch-distance, удаление jump-to-next. Применяются только когда точно известны адреса блоков.`},
+    { num:95, name:'Determine First Cold Block', cat:'codegen', always:false, cond:'OptimizationEnabled (non-WASM)',
+      fn:'PHASE_DETERMINE_FIRST_COLD_BLOCK → fgDetermineFirstColdBlock()', tags:['cond'],
+      desc:`<b>Определение начала «холодной» секции кода.</b> Метод может быть разделён на горячую (hot) и холодную (cold) секции. Холодные блоки (<code>BBF_RUN_RARELY</code>) размещаются в отдельном cold-segment памяти. Улучшает I-cache locality: горячий код лежит компактно и не вытесняется редко выполняемым кодом.`},
+    { num:96, name:'Align Loops', cat:'loop', always:true,
+      fn:'PHASE_ALIGN_LOOPS → placeLoopAlignInstructions()',
+      desc:`<b>Выравнивание горячих циклов по границе cache-line.</b> Для каждого innermost-цикла, чей вес блока превышает порог (<code>compJitAlignLoopMinBlockWeight</code>), добавляется NOP-padding так, чтобы первая инструкция тела цикла была выровнена (16 или 32 байта). Гарантирует, что всё тело цикла умещается в минимальное число cache-line, снижая latency при fetch.`},
+    { num:97, name:'Code Generation', cat:'codegen', always:true,
+      fn:'codeGen->genGenerateCode(methodCodePtr, methodCodeSize)',
+      desc:`<b>Финальная эмиссия машинного кода.</b> Code generator обходит блоки в layout-порядке и для каждого LIR-узла эмитирует реальные машинные инструкции. Параллельно строит: GC-info таблицу (какие регистры/стек-слоты содержат GC-ссылки в каждой точке), EH-таблицу (для runtime-диспетчеризации исключений), unwind-информацию (для stack unwinding), debug-символы (PDB/DWARF).`},
+  ]
+},
+];
+
+function render(filter) {
+  const container = document.getElementById('pipeline');
+  container.innerHTML = '';
+  let seq = 0;
+
+  PHASES.forEach((grp, gi) => {
+    const filtered = grp.phases.filter(p => {
+      if (!filter || filter === 'all') return true;
+      if (filter === 'opt')    return !!p.cond;
+      if (filter === 'always') return p.always === true;
+      if (filter.startsWith('cat:')) return p.cat === filter.slice(4);
+      return true;
+    });
+    if (!filtered.length) return;
+
+    const groupEl = document.createElement('div');
+    groupEl.className = 'group';
+    groupEl.dataset.cat = grp.gcat;
+
+    const header = document.createElement('div');
+    header.className = 'group-header';
+    header.innerHTML = `<span class="group-label">${grp.group}</span><span class="group-badge">${filtered.length} фаз</span><span class="group-arrow">▼</span>`;
+    header.onclick = () => toggleGroup(groupEl);
+
+    const body = document.createElement('div');
+    body.className = 'group-body';
+
+    filtered.forEach((p, pi) => {
+      seq++;
+      const card = document.createElement('div');
+      card.className = 'phase';
+      card.dataset.cat = p.cat;
+      card.style.animationDelay = `${gi * 30 + pi * 12}ms`;
+
+      const tagsHtml = (p.tags || []).filter(t => !['cond','repeat'].includes(t)).map(t => `<span class="tag tag-${t}">${t}</span>`).join('');
+      const condTag  = p.cond   ? `<span class="tag tag-cond">if: ${p.cond}</span>` : '';
+      const debugTag = p.cat === 'debug' ? `<span class="tag tag-debug">debug-only</span>` : '';
+      const repeatTag= (p.tags||[]).includes('repeat') ? `<span class="tag tag-repeat">in opt-loop</span>` : '';
+
+      card.innerHTML = `
+        <div class="phase-inner">
+          <span class="phase-num">${String(seq).padStart(2,'0')}</span>
+          <div class="phase-content">
+            <div class="phase-name">${p.name}${tagsHtml}</div>
+            <div class="phase-fn"><em>//</em> ${p.fn}</div>
+            <div class="phase-desc">${p.desc}</div>
+          </div>
+          <div class="phase-tags">${condTag}${debugTag}${repeatTag}</div>
+        </div>
+      `;
+      body.appendChild(card);
+    });
+
+    groupEl.appendChild(header);
+    groupEl.appendChild(body);
+    container.appendChild(groupEl);
+
+    requestAnimationFrame(() => { body.style.maxHeight = body.scrollHeight + 'px'; });
+  });
+}
+
+function toggleGroup(el) {
+  const body = el.querySelector('.group-body');
+  if (el.classList.contains('collapsed')) {
+    el.classList.remove('collapsed');
+    body.style.maxHeight = body.scrollHeight + 'px';
+  } else {
+    el.classList.add('collapsed');
+    body.style.maxHeight = '0';
+  }
+}
+
+function expandAll()  { document.querySelectorAll('.group').forEach(g => { g.classList.remove('collapsed'); const b = g.querySelector('.group-body'); b.style.maxHeight = b.scrollHeight + 'px'; }); }
+function collapseAll(){ document.querySelectorAll('.group').forEach(g => { g.classList.add('collapsed'); g.querySelector('.group-body').style.maxHeight = '0'; }); }
+
+function filterAll(btn)  { setActive(btn); render('all'); }
+function filterOpt(btn)  { setActive(btn); render('opt'); }
+function filterAlways(btn){ setActive(btn); render('always'); }
+function filterCat(cat)  { document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active')); render('cat:'+cat); }
+function setActive(btn)  { document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); }
+
+render('all');
+// Expand all groups after render so descriptions are visible immediately
+setTimeout(() => {
+  document.querySelectorAll('.group-body').forEach(b => {
+    b.style.maxHeight = b.scrollHeight + 4000 + 'px';
+  });
+}, 100);
+</script>
+</body>
+</html>

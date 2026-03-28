@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RyuJIT — Compilation Phases</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Barlow+Condensed:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080c10;
+  --surface: #0d1219;
+  --surface2: #121a24;
+  --border: #1c2940;
+  --border2: #243350;
+  --text: #cdd9e8;
+  --muted: #4a6280;
+  --dim: #2a3d55;
+
+  --c-import:   #38bdf8;
+  --c-morph:    #fb923c;
+  --c-opt:      #a3e635;
+  --c-eh:       #f472b6;
+  --c-ssa:      #818cf8;
+  --c-codegen:  #34d399;
+  --c-cond:     #fbbf24;
+  --c-debug:    #6b7280;
+  --c-loop:     #f87171;
+
+  --track-w: 3px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── SCANLINE TEXTURE ── */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.08) 2px,
+    rgba(0,0,0,0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.wrap { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 2.5rem 1.5rem 6rem; }
+
+/* ── HEADER ── */
+header { margin-bottom: 3rem; }
+.header-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; }
+.logo { font-family: 'Barlow Condensed', sans-serif; font-size: 0.7rem; font-weight: 600; color: var(--muted); letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 0.4rem; }
+h1 { font-family: 'Barlow Condensed', sans-serif; font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 800; line-height: 0.95; color: var(--text); letter-spacing: -0.01em; }
+h1 em { color: var(--c-opt); font-style: normal; }
+.header-stats { display: flex; gap: 2rem; flex-wrap: wrap; }
+.stat { text-align: right; }
+.stat-val { font-family: 'Barlow Condensed', sans-serif; font-size: 2rem; font-weight: 700; line-height: 1; }
+.stat-lbl { font-size: 0.6rem; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-top: 0.2rem; }
+
+/* ── LEGEND ── */
+.legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin-bottom: 2.5rem; }
+.legend-item { display: flex; align-items: center; gap: 0.4rem; font-size: 0.65rem; color: var(--muted); letter-spacing: 0.05em; cursor: pointer; transition: color 0.2s; }
+.legend-item:hover { color: var(--text); }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── FILTER BAR ── */
+.filter-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 2rem; }
+.filter-btn { background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; padding: 0.35rem 0.75rem; border-radius: 3px; cursor: pointer; letter-spacing: 0.05em; transition: all 0.15s; }
+.filter-btn:hover { border-color: var(--border2); color: var(--text); }
+.filter-btn.active { background: var(--surface2); border-color: var(--c-opt); color: var(--c-opt); }
+
+/* ── PIPELINE ── */
+.pipeline { position: relative; padding-left: 2.5rem; }
+
+/* vertical track */
+.pipeline::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: var(--track-w);
+  background: linear-gradient(to bottom, var(--border) 0%, var(--border2) 50%, var(--border) 100%);
+  border-radius: 2px;
+}
+
+/* ── GROUP ── */
+.group { margin-bottom: 0.25rem; }
+.group-header {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.6rem 0.75rem 0.6rem 0;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+.group-header::before {
+  content: '';
+  position: absolute;
+  left: calc(-2.5rem + 0px);
+  top: 50%; transform: translateY(-50%);
+  width: 16px; height: 16px;
+  background: var(--bg);
+  border: var(--track-w) solid currentColor;
+  border-radius: 50%;
+}
+.group-name {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 0.9rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.12em;
+}
+.group-count {
+  font-size: 0.65rem; color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  padding: 0.1rem 0.4rem; border-radius: 2px;
+}
+.group-chevron { margin-left: auto; font-size: 0.6rem; color: var(--muted); transition: transform 0.2s; }
+.group.collapsed .group-chevron { transform: rotate(-90deg); }
+.group-body { overflow: hidden; transition: max-height 0.35s ease; }
+.group.collapsed .group-body { max-height: 0 !important; }
+
+/* ── PHASE ROW ── */
+.phase {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr auto;
+  align-items: start;
+  gap: 0 0.75rem;
+  padding: 0.55rem 0.75rem 0.55rem 0;
+  border-radius: 4px;
+  position: relative;
+  transition: background 0.15s;
+  cursor: default;
+}
+.phase:hover { background: var(--surface2); }
+
+/* connector dot */
+.phase::before {
+  content: '';
+  grid-column: 1;
+  grid-row: 1 / 3;
+  align-self: center;
+  justify-self: center;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+  position: absolute;
+  left: calc(-2.5rem + 5px);
+  top: 50%; transform: translateY(-50%);
+}
+
+/* connector line down from group dot */
+.phase-num {
+  grid-column: 1;
+  font-size: 0.6rem; color: var(--muted);
+  text-align: right;
+  padding-top: 0.1rem;
+  padding-right: 0.3rem;
+  min-width: 2rem;
+}
+
+.phase-body { grid-column: 2; }
+.phase-name {
+  font-size: 0.78rem; color: var(--text);
+  font-weight: 500; line-height: 1.2;
+  display: flex; align-items: center; gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.phase-fn {
+  font-size: 0.65rem; color: var(--muted);
+  margin-top: 0.25rem;
+}
+.phase-fn span { color: var(--dim); }
+.phase-note {
+  font-size: 0.65rem; color: var(--muted);
+  margin-top: 0.2rem; font-style: italic;
+  line-height: 1.4;
+}
+.phase-tags { grid-column: 3; display: flex; flex-direction: column; gap: 0.25rem; align-items: flex-end; }
+
+/* tags */
+.tag {
+  font-size: 0.55rem; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; padding: 0.15rem 0.45rem;
+  border-radius: 2px; white-space: nowrap;
+}
+.tag-cond  { background: #2a2000; color: var(--c-cond); border: 1px solid #3a3000; }
+.tag-debug { background: #1a1a1a; color: var(--c-debug); border: 1px solid #2a2a2a; }
+.tag-opt   { background: #0f1a00; color: var(--c-opt);   border: 1px solid #1a2a00; }
+.tag-loop  { background: #2a0a0a; color: var(--c-loop);  border: 1px solid #3a1010; }
+.tag-new   { background: #001a20; color: var(--c-import);border: 1px solid #003040; }
+.tag-repeat{ background: #1a0a2a; color: var(--c-ssa);   border: 1px solid #2a1a3a; }
+.tag-wasm  { background: #001a10; color: var(--c-codegen);border:1px solid #003020; }
+.tag-platform { background: #200a1a; color: var(--c-eh); border: 1px solid #300a2a; }
+
+/* color dots per category */
+.phase[data-cat="import"] .phase-name { }
+.phase[data-cat="import"]::before { background: var(--c-import); }
+.phase[data-cat="morph"]::before   { background: var(--c-morph); }
+.phase[data-cat="opt"]::before     { background: var(--c-opt); }
+.phase[data-cat="eh"]::before      { background: var(--c-eh); }
+.phase[data-cat="ssa"]::before     { background: var(--c-ssa); }
+.phase[data-cat="codegen"]::before { background: var(--c-codegen); }
+.phase[data-cat="loop"]::before    { background: var(--c-loop); }
+.phase[data-cat="debug"]::before   { background: var(--c-debug); }
+
+/* color of group marker */
+.group[data-cat="import"] .group-header { color: var(--c-import); }
+.group[data-cat="morph"]  .group-header { color: var(--c-morph); }
+.group[data-cat="opt"]    .group-header { color: var(--c-opt); }
+.group[data-cat="eh"]     .group-header { color: var(--c-eh); }
+.group[data-cat="ssa"]    .group-header { color: var(--c-ssa); }
+.group[data-cat="codegen"].group-header { color: var(--c-codegen); }
+.group[data-cat="loop"]   .group-header { color: var(--c-loop); }
+.group[data-cat="debug"]  .group-header { color: var(--c-debug); }
+
+.phase.hidden { display: none; }
+
+/* ── SEPARATOR ── */
+.sep {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  font-size: 0.6rem; color: var(--dim); letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.sep::after {
+  content: '';
+  flex: 1; height: 1px;
+  background: var(--border);
+}
+
+/* ── TOOLTIP ── */
+.tooltip {
+  position: fixed;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  font-size: 0.7rem;
+  line-height: 1.6;
+  max-width: 320px;
+  pointer-events: none;
+  z-index: 100;
+  opacity: 0;
+  transition: opacity 0.15s;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+.tooltip.visible { opacity: 1; }
+.tooltip-title { color: var(--text); font-weight: 600; margin-bottom: 0.35rem; }
+.tooltip-body { color: var(--muted); }
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* ── ANIMATE IN ── */
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.phase { animation: slideIn 0.3s ease both; }
+
+/* stagger via JS-set style */
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="header-top">
+    <div>
+      <div class="logo">RyuJIT · Compiler::compCompile</div>
+      <h1>Compilation<br><em>Phases</em></h1>
+    </div>
+    <div class="header-stats">
+      <div class="stat"><div class="stat-val" style="color:var(--c-opt)">68</div><div class="stat-lbl">Total Phases</div></div>
+      <div class="stat"><div class="stat-val" style="color:var(--c-cond)">~30</div><div class="stat-lbl">Opt-only</div></div>
+      <div class="stat"><div class="stat-val" style="color:var(--c-loop)">8</div><div class="stat-lbl">Groups</div></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item" onclick="filterCat('import')"><div class="legend-dot" style="background:var(--c-import)"></div>Import / Parse</div>
+    <div class="legend-item" onclick="filterCat('morph')"><div class="legend-dot"  style="background:var(--c-morph)"></div>Morph / Inline</div>
+    <div class="legend-item" onclick="filterCat('eh')"><div class="legend-dot"     style="background:var(--c-eh)"></div>EH / Exceptions</div>
+    <div class="legend-item" onclick="filterCat('loop')"><div class="legend-dot"   style="background:var(--c-loop)"></div>Loops</div>
+    <div class="legend-item" onclick="filterCat('ssa')"><div class="legend-dot"    style="background:var(--c-ssa)"></div>SSA / Value Num</div>
+    <div class="legend-item" onclick="filterCat('opt')"><div class="legend-dot"    style="background:var(--c-opt)"></div>Optimizations</div>
+    <div class="legend-item" onclick="filterCat('codegen')"><div class="legend-dot" style="background:var(--c-codegen)"></div>Codegen / LSRA</div>
+    <div class="legend-item" onclick="filterCat('debug')"><div class="legend-dot"  style="background:var(--c-debug)"></div>Debug-only</div>
+  </div>
+
+  <div class="filter-bar">
+    <button class="filter-btn active" onclick="filterAll(this)">ALL PHASES</button>
+    <button class="filter-btn" onclick="filterOpt(this)">OPT-ONLY</button>
+    <button class="filter-btn" onclick="filterAlways(this)">ALWAYS RUN</button>
+    <button class="filter-btn" onclick="expandAll()">EXPAND ALL</button>
+    <button class="filter-btn" onclick="collapseAll()">COLLAPSE ALL</button>
+  </div>
+</header>
+
+<div class="pipeline" id="pipeline"></div>
+
+</div>
+
+<div class="tooltip" id="tooltip">
+  <div class="tooltip-title" id="tt-title"></div>
+  <div class="tooltip-body" id="tt-body"></div>
+</div>
+
+<script>
+const PHASES = [
+  // ── GROUP: STARTUP ──
+  { group: 'Startup & Profile', gcat: 'import', phases: [
+    { num: 1,  name: 'Pre-import',          fn: 'PHASE_PRE_IMPORT / preImportPhase',      cat: 'import', always: true,
+      note: 'Initialises hash bitvectors, assigns stub argument variable if needed.',
+      tip: 'Runs before IL is imported. Sets up hashBv, lvaStubArgumentVar for stub-based methods, and zero-inits compCurLife.' },
+    { num: 2,  name: 'IBC Preparation',     fn: 'PHASE_IBCPREP / fgPrepareToInstrumentMethod', cat: 'opt', always: false, cond: 'JIT_FLAG_BBINSTR',
+      note: 'Only runs when block-count instrumentation is requested (Tier-0 with PGO probe insertion).',
+      tip: 'Prepares the flow graph for inserting IBC block-count probes. Only called when JIT_FLAG_BBINSTR is set.' },
+    { num: 3,  name: 'Incorporate Profile', fn: 'PHASE_INCPROFILE / fgIncorporateProfileData', cat: 'import', always: true,
+      note: 'Reads PGO data and applies block/edge weights. Must run before importation (importer is weight-sensitive).',
+      tip: 'Loads and applies profile data (PGO). Enables CHECK_PROFILE phase checks. Importer relies on these weights to make inlining and branch decisions.' },
+    { num: 4,  name: 'Canonicalize Entry',  fn: 'PHASE_CANONICALIZE_ENTRY / fgCanonicalizeFirstBB', cat: 'import', always: true,
+      note: 'Ensures the first basic block has a canonical form required by all downstream passes.',
+      tip: 'Makes fgFirstBB satisfy invariants needed throughout compilation. Adds CHECK_FG_INIT_BLOCK check.' },
+    { num: 5,  name: 'OSR Entry Fix',       fn: '(inline) fgFixEntryFlowForOSR',          cat: 'import', always: false, cond: 'opts.IsOSR()',
+      note: 'On-Stack Replacement only: rewires entry flow to jump to the OSR IL offset.',
+      tip: 'Rewrites the entry block to branch directly into the OSR target, bypassing code that already ran in Tier-0.' },
+  ]},
+
+  // ── GROUP: IMPORTATION ──
+  { group: 'IL Importation', gcat: 'import', phases: [
+    { num: 6,  name: 'Importation',         fn: 'PHASE_IMPORTATION / fgImport',           cat: 'import', always: true,
+      note: 'Core phase: converts every IL instruction in every basic block into a HIR tree.',
+      tip: 'The IL-to-HIR importer. Calls the inline strategy, creates GenTree nodes for every IL opcode, sets up basic blocks, and drives GDV/inlining speculation.' },
+    { num: 7,  name: 'Early QMARK Expansion', fn: 'PHASE_EARLY_QMARK_EXPANSION / fgExpandQmarkNodes(early=true)', cat: 'morph', always: true,
+      note: 'Expands GT_QMARK nodes that must be expanded before inlining.',
+      tip: 'Breaks down conditional expressions (?: operators) into real control-flow branches for nodes that cannot survive as QMARKs through the inliner.' },
+    { num: 8,  name: 'IBC Instrumentation', fn: 'PHASE_IBCINSTR / fgInstrumentMethod',    cat: 'opt', always: false, cond: 'JIT_FLAG_BBINSTR',
+      note: 'Inserts block-count and class-profile probes into the IR.',
+      tip: 'Adds IBC counter increments and class probes at appropriate points in the IR, enabling profile-guided optimization in future tier compilations.' },
+    { num: 9,  name: 'Patchpoints',         fn: 'PHASE_PATCHPOINTS / fgTransformPatchpoints', cat: 'import', always: true,
+      note: 'Expands OSR patchpoint nodes into actual transitions.',
+      tip: 'Transforms GT_PATCHPOINT nodes into OSR check sequences that allow the runtime to tier up a method at a loop back-edge.' },
+    { num: 10, name: 'Indirect Calls',      fn: 'PHASE_INDXCALL / fgTransformIndirectCalls', cat: 'morph', always: true,
+      note: 'Expands indirect calls that require control-flow (e.g. virtual dispatch stubs).',
+      tip: 'Rewrites GT_CALL nodes for calls that need a control-flow dispatch sequence rather than a simple indirect call instruction.' },
+    { num: 11, name: 'Post-Importation Cleanup', fn: 'PHASE_POST_IMPORT / fgPostImportationCleanup', cat: 'import', always: true,
+      note: 'Removes un-imported or partially imported basic blocks, cleans up try regions.',
+      tip: 'Trims dead blocks that were never reached during importation, finalises OSR step blocks, and removes incomplete try regions.' },
+    { num: 12, name: 'Async Context Save',  fn: 'PHASE_ASYNC_SAVE_CONTEXTS / SaveAsyncContexts', cat: 'import', always: true,
+      note: 'Captures/restores execution contexts for async methods.',
+      tip: 'For async state machines, inserts code to save and restore per-frame execution contexts around suspension points.' },
+  ]},
+
+  // ── GROUP: MORPH & INLINE ──
+  { group: 'Morph & Inlining', gcat: 'morph', phases: [
+    { num: 13, name: 'Morph Init',          fn: 'PHASE_MORPH_INIT / fgMorphInit',         cat: 'morph', always: true,
+      note: 'Prepares data structures needed for morph passes (must run before PHASE_MORPH_INLINE).',
+      tip: 'Initialises morph state: implicit byref tracking, local variable tables expansion, and other structures the inliner and morph passes depend on.' },
+    { num: 14, name: 'Inline Callees',      fn: 'PHASE_MORPH_INLINE / fgInline',          cat: 'morph', always: true,
+      note: 'Drives the inliner: evaluates candidates, imports inline bodies, integrates them.',
+      tip: 'Main inlining phase. Uses InlineStrategy to evaluate each call site, imports accepted inlinees via fgImport, and splices the inlinee trees into the caller.' },
+    { num: 15, name: 'Resolve GDVs',        fn: 'PHASE_RESOLVE_GDVS / fgResolveGDVs',    cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'After inlining, re-evaluates guarded devirtualization checks with improved type info.',
+      tip: 'Inlining may reveal concrete types. This phase revisits GDV guards and resolves them to direct calls or removes them if now unconditional.' },
+    { num: 16, name: 'DFS Blocks 1',        fn: 'PHASE_DFS_BLOCKS1 / fgDfsBlocksAndRemove', cat: 'morph', always: false, cond: 'OptimizationEnabled',
+      note: 'First dead-block removal pass after inlining.',
+      tip: 'Computes a DFS ordering and removes any blocks that became unreachable after inlining expanded or removed call sites.' },
+    { num: 17, name: 'Object Allocator',    fn: 'PHASE_ALLOCATE_OBJECTS / objectAllocator.Run()', cat: 'opt', always: true,
+      note: 'Stack-promotes GT_ALLOCOBJ nodes where possible (escape analysis).',
+      tip: 'Analyses each heap allocation (GT_ALLOCOBJ). If the object does not escape the method, converts it to a stack allocation, eliminating GC pressure.' },
+    { num: 18, name: 'Add Internal Blocks', fn: 'PHASE_MORPH_ADD_INTERNAL / fgAddInternal', cat: 'morph', always: true,
+      note: 'Inserts any auxiliary blocks needed by later passes (e.g. null-check landing pads).',
+      tip: 'Adds internal blocks the compiler needs: GC poll sites, NullRef check blocks, and other synthetic control-flow that morph requires.' },
+    { num: 19, name: 'Swift Error Returns', fn: 'PHASE_SWIFT_ERROR_RET / fgAddSwiftErrorReturns', cat: 'morph', always: false, cond: 'SWIFT_SUPPORT',
+      tip: 'Rewrites GT_RETURN to GT_SWIFT_ERROR_RET for Swift interop error-handling ABI.', tags: ['platform'] },
+  ]},
+
+  // ── GROUP: EXCEPTION HANDLING ──
+  { group: 'Exception Handling', gcat: 'eh', phases: [
+    { num: 20, name: 'Remove Empty Try',             fn: 'PHASE_EMPTY_TRY / fgRemoveEmptyTry', cat: 'eh', always: true,
+      note: 'Removes try regions whose body is empty (try/finally).',
+      tip: 'Eliminates EH overhead for try blocks that contain no code, simplifying the EH table and enabling further flow-graph optimizations.' },
+    { num: 21, name: 'Remove Empty Try/Catch/Fault', fn: 'PHASE_EMPTY_TRY_CATCH_FAULT / fgRemoveEmptyTryCatchOrTryFault', cat: 'eh', always: true,
+      tip: 'Removes empty try-catch and try-fault regions that were never populated.' },
+    { num: 22, name: 'Remove Empty Finally',         fn: 'PHASE_EMPTY_FINALLY / fgRemoveEmptyFinally', cat: 'eh', always: true,
+      tip: 'Eliminates finally blocks whose body reduces to a no-op after morph.' },
+    { num: 23, name: 'Merge Finally Chains',         fn: 'PHASE_MERGE_FINALLY_CHAINS / fgMergeFinallyChains', cat: 'eh', always: true,
+      note: 'Streamlines chained finally invocations into a single path.',
+      tip: 'Merges nested finally regions that share the same handler, reducing the number of finally dispatch paths and shrinking EH tables.' },
+    { num: 24, name: 'Clone Finally',                fn: 'PHASE_CLONE_FINALLY / fgCloneFinally', cat: 'eh', always: true,
+      note: 'Duplicates small finally bodies onto non-exceptional paths to avoid EH dispatch overhead.',
+      tip: 'Clones small finally handlers directly onto the normal (non-exception) return path. Avoids the overhead of the EH dispatch mechanism for the common case.' },
+  ]},
+
+  // ── GROUP: FLOW OPT (pre-SSA) ──
+  { group: 'Flow Optimizations (pre-SSA)', gcat: 'opt', phases: [
+    { num: 25, name: 'Head/Tail Merge 1',         fn: 'PHASE_HEAD_TAIL_MERGE / fgHeadTailMerge(true)', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Merges duplicate head/tail code between sibling blocks to reduce code size.',
+      tip: 'Identifies common sequences of statements at the start or end of sibling successor blocks and factors them out, reducing duplication.' },
+    { num: 26, name: 'Merge Throw Blocks',        fn: 'PHASE_MERGE_THROWS / fgTailMergeThrows', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Deduplicates throw helpers to reduce code size.',
+      tip: 'Merges basic blocks that end with identical throw helpers (e.g. multiple NullReferenceException throws) into a single shared block.' },
+    { num: 27, name: 'Early Flow Graph Update',  fn: 'PHASE_EARLY_UPDATE_FLOW_GRAPH / fgUpdateFlowGraphPhase', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Simplifies the flow graph: removes empty blocks, merges single-successor chains.',
+      tip: 'Runs fgUpdateFlowGraph to compact the CFG early, removing pass-through blocks and enabling better code for later morph phases.' },
+    { num: 28, name: 'Promote Structs',           fn: 'PHASE_PROMOTE_STRUCTS / fgPromoteStructs', cat: 'morph', always: true,
+      note: 'Decomposes struct locals into individual field locals where profitable.',
+      tip: 'Analyses struct locals and promotes their fields to scalar variables when this reduces memory traffic and enables register allocation of the fields.' },
+    { num: 29, name: 'DFS Blocks 2',             fn: 'PHASE_DFS_BLOCKS2 / fgDfsBlocksAndRemove', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      tip: 'Second dead-block removal pass before local morph.' },
+    { num: 30, name: 'Local Morph',              fn: 'PHASE_LOCAL_MORPH / fgLocalMorph',          cat: 'morph', always: true,
+      note: 'Simplifies local variable accesses, runs address-exposure analysis.',
+      tip: 'Rewrites local variable access patterns (ADDR(LCL_VAR) → OBJ(addr)), marks address-exposed locals, and prepares for later SSA construction.' },
+    { num: 31, name: 'Optimize Mask Conversions',fn: 'PHASE_OPTIMIZE_MASK_CONVERSIONS / fgOptimizeMaskConversions', cat: 'opt', always: true,
+      tip: 'Eliminates redundant to/from-mask conversions on local variables (vector/SIMD types).' },
+    { num: 32, name: 'Early Liveness',           fn: 'PHASE_EARLY_LIVENESS / fgEarlyLiveness',    cat: 'ssa', always: true,
+      note: 'Computes liveness for forward-sub and morph before full SSA is available.',
+      tip: 'A lightweight liveness pass that computes live-in/live-out sets for the simple case. Results are used by fgForwardSub and fgMorphBlocks.' },
+    { num: 33, name: 'Forward Substitution',     fn: 'PHASE_FWD_SUB / fgForwardSub',              cat: 'opt', always: true,
+      note: 'Propagates single-use stores into their uses to enable better morph / constant folding.',
+      tip: 'Detects patterns like "t = expr; use(t)" where t is used exactly once and replaces the use with "use(expr)", eliminating the temporary.' },
+    { num: 34, name: 'Physical Promotion',       fn: 'PHASE_PHYSICAL_PROMOTION / PhysicalPromotion', cat: 'morph', always: true,
+      note: 'Promotes struct fields based on how they are actually accessed in memory (physical layout).',
+      tip: 'A second struct-promotion pass based on the physical access pattern (loads/stores of specific byte ranges) rather than field names.' },
+    { num: 35, name: 'Implicit ByRef Copy Omission', fn: 'PHASE_IMPBYREF_COPY_OMISSION / fgMarkImplicitByRefCopyOmissionCandidates', cat: 'morph', always: true,
+      tip: 'Marks implicit-byref parameters whose copy can be elided at the call site (last-use optimization).' },
+    { num: 36, name: 'Retype Implicit ByRefs',   fn: 'PHASE_MORPH_IMPBYREF / fgRetypeImplicitByRefArgs', cat: 'morph', always: true,
+      tip: 'Updates the type of implicit-byref parameters and decides which struct promotions to keep or discard.' },
+    { num: 37, name: 'Global Morph',             fn: 'PHASE_MORPH_GLOBAL / fgMorphBlocks',        cat: 'morph', always: true,
+      note: 'Main morph pass: simplifies, normalises and rewrites the entire HIR tree.',
+      tip: 'The heaviest morph phase. Visits every tree in every block and performs constant folding, operator simplification, call lowering, QMARK expansion, and more.' },
+    { num: 38, name: 'Post Morph',               fn: 'PHASE_POST_MORPH / postMorphPhase',         cat: 'morph', always: true,
+      note: 'Cleans up after morph: sets code options, expands remaining QMARKs, enables IR checks.',
+      tip: 'Finalises the byref promotion demotions, sets JIT code-generation options (interruptible GC etc.), runs the late QMARK expansion, and enables CHECK_IR.' },
+    { num: 39, name: 'Compute Block Weights',    fn: 'PHASE_COMPUTE_BLOCK_WEIGHTS / fgComputeBlockWeights', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      tip: 'Computes execution frequency weights for basic blocks, used by layout and alignment heuristics.' },
+  ]},
+
+  // ── GROUP: EH cleanup round 2 ──
+  { group: 'EH Cleanup (Round 2)', gcat: 'eh', phases: [
+    { num: 40, name: 'Remove Empty Finally 2',        fn: 'PHASE_EMPTY_FINALLY_2', cat: 'eh', always: false, cond: 'OptimizationEnabled', tip: 'Second pass to remove empties revealed after morph.' },
+    { num: 41, name: 'Remove Empty Try 2',            fn: 'PHASE_EMPTY_TRY_2',     cat: 'eh', always: false, cond: 'OptimizationEnabled', tip: 'Second pass.' },
+    { num: 42, name: 'Remove Empty Try/Catch/Fault 2',fn: 'PHASE_EMPTY_TRY_CATCH_FAULT_2', cat: 'eh', always: false, cond: 'OptimizationEnabled', tip: 'Second pass.' },
+  ]},
+
+  // ── GROUP: LOOP ANALYSIS & OPT ──
+  { group: 'Loop Analysis & Optimization', gcat: 'loop', phases: [
+    { num: 43, name: 'Optimize Flow',         fn: 'PHASE_OPTIMIZE_FLOW / optOptimizeFlow',   cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Flow-graph optimizations without block reordering.',
+      tip: 'Removes redundant branches, folds conditional jumps whose outcome is known from dominance, simplifies switch dispatch.' },
+    { num: 44, name: 'Head/Tail Merge 2',     fn: 'PHASE_HEAD_TAIL_MERGE2 / fgHeadTailMerge(false)', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      tip: 'Second head/tail merge pass, now without restructuring the graph.' },
+    { num: 45, name: 'DFS Blocks 3',          fn: 'PHASE_DFS_BLOCKS3 / fgDfsBlocksAndRemove', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      tip: 'Third dead-block removal. Removes blocks made unreachable by flow optimizations.' },
+    { num: 46, name: 'Adjust Throw Edge Likelihoods', fn: 'PHASE_ADJUST_THROW_LIKELIHOODS / ProfileSynthesis::AdjustThrowEdgeLikelihoods', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Corrects heuristic edge probabilities on paths known to throw.',
+      tip: 'Exception-throwing edges (throw, check-failed) are heuristically marked as rare, overriding any synthetic profile data.' },
+    { num: 47, name: 'Find Loops',            fn: 'PHASE_FIND_LOOPS / optFindLoopsPhase',     cat: 'loop', always: false, cond: 'OptimizationEnabled',
+      note: 'Discovers and classifies all natural loops in the CFG.',
+      tip: 'Runs the DFS-based natural-loop finder (FlowGraphNaturalLoops::Find). Annotates loop headers, identifies induction variables, entry/exit/back edges.' },
+    { num: 48, name: 'Repair Profile (post-morph)', fn: 'PHASE_REPAIR_PROFILE_POST_MORPH / fgRepairProfile', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      tip: 'Re-establishes profile consistency after inlining and morph may have changed block weights.' },
+    { num: 49, name: 'Invert Loops',          fn: 'PHASE_INVERT_LOOPS / optInvertLoops',      cat: 'loop', always: false, cond: 'OptimizationEnabled',
+      note: 'Transforms while-loops into do-while form by hoisting the condition check.',
+      tip: 'Duplicates the loop condition into a pre-header guard block, turning "while(cond) body" into "if(cond) do { body } while(cond)". Enables the body to be a tight self-loop.' },
+    { num: 50, name: 'Set Block Weights',     fn: 'PHASE_SET_BLOCK_WEIGHTS / optSetBlockWeights', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Scales block weights and marks rarely-run blocks.',
+      tip: 'Applies profile-derived or heuristic weights to all basic blocks, and marks cold blocks with BBF_RUN_RARELY for later cold-code splitting.' },
+    { num: 51, name: 'Clone Loops',           fn: 'PHASE_CLONE_LOOPS / optCloneLoops',        cat: 'loop', always: false, cond: 'OptimizationEnabled',
+      note: 'Clones loops with optimization opportunities, adds a dynamic condition to choose between the two versions.',
+      tip: 'Creates a fast path (optimized) and slow path (safe) copy of certain loops. A runtime condition selects the fast path when its invariants hold (e.g., no aliasing).' },
+    { num: 52, name: 'Unroll Loops',          fn: 'PHASE_UNROLL_LOOPS / optUnrollLoops',      cat: 'loop', always: false, cond: 'OptimizationEnabled',
+      note: 'Fully or partially unrolls short constant-trip-count loops.',
+      tip: 'Identifies loops whose trip count is known at compile time (or is small). Duplicates the loop body N times, eliminating the back-edge branch.' },
+    { num: 53, name: 'Compute Dominators',    fn: 'PHASE_COMPUTE_DOMINATORS / fgComputeDominators', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      tip: 'Builds the dominator tree and identifies exceptional-entry blocks. Required for SSA and loop-invariant code motion.' },
+  ]},
+
+  // ── GROUP: SSA & VALUE NUMBERING LOOP ──
+  { group: 'SSA / Value Numbering / Opt Loop', gcat: 'ssa', phases: [
+    { num: 54, name: 'Mark Local Vars',       fn: 'PHASE_MARK_LOCAL_VARS / lvaMarkLocalVars', cat: 'morph', always: true,
+      note: 'Computes reference counts and marks which locals are candidates for enregistration.',
+      tip: 'Iterates all trees to compute ref-counts per local. After this point locals are "ref counted". lvaTrackedFixed is NOT set yet.' },
+    { num: 55, name: 'Find Oper Order',       fn: 'PHASE_FIND_OPER_ORDER / fgFindOperOrder', cat: 'morph', always: true,
+      tip: 'Determines the evaluation order of sub-expressions in each tree (sets gtOrder / side-effect flags).' },
+    { num: 56, name: 'Set Block Order',       fn: 'PHASE_SET_BLOCK_ORDER / fgSetBlockOrder', cat: 'morph', always: true,
+      note: 'Weaves tree node lists; determines if method is fully interruptible.',
+      tip: 'Links the statement trees into a list in evaluation order. Detects GC-safe-point cycles to decide between interruptible and non-interruptible GC code.' },
+    { num: 57, name: 'Build SSA',             fn: 'PHASE_BUILD_SSA / fgSsaBuild',            cat: 'ssa', always: false, cond: 'OptimizationEnabled (doSsa)',
+      note: 'Constructs SSA form: inserts φ-functions, renames all variables.',
+      tip: 'Runs SSA construction: computes the dominator-frontier, inserts PHI nodes at join points, then renames every local variable use and definition to its SSA version.' },
+    { num: 58, name: 'Early Propagation',     fn: 'PHASE_EARLY_PROP / optEarlyProp',         cat: 'opt', always: false, cond: 'OptimizationEnabled (doEarlyProp)',
+      note: 'Propagates array lengths and rewrites getType() calls before value numbering.',
+      tip: 'Propagates GT_ARR_LENGTH values and resolves Type.GetType() / obj.GetType() calls where the type is statically known, sharpening VN results.' },
+    { num: 59, name: 'Value Number',          fn: 'PHASE_VALUE_NUMBER / fgValueNumber',      cat: 'ssa', always: false, cond: 'OptimizationEnabled (doValueNum)',
+      note: 'Assigns value numbers to all tree nodes; enables alias analysis and CSE.',
+      tip: 'Runs the VN algorithm over the SSA IR. Assigns a canonical value number ($VN) to each node. Identical VNs = provably equal values. Enables CSE, copy-prop, assertion prop.' },
+    { num: 60, name: 'Hoist Loop Code',       fn: 'PHASE_HOIST_LOOP_CODE / optHoistLoopCode', cat: 'loop', always: false, cond: 'OptimizationEnabled (doLoopHoisting)',
+      note: 'Moves loop-invariant expressions out of loops into preheader blocks.',
+      tip: 'Identifies trees inside loops whose VN does not change across iterations (loop-invariant). Hoists them to the loop preheader, computing them once instead of every iteration.' },
+    { num: 61, name: 'VN Copy Propagation',   fn: 'PHASE_VN_COPY_PROP / optVnCopyProp',     cat: 'opt', always: false, cond: 'OptimizationEnabled (doCopyProp)',
+      note: 'Replaces uses of a variable with a copy-source if VNs match.',
+      tip: 'Uses value numbers to find cases where two variables have equal VNs and replaces the use of one with the other, enabling further simplification.' },
+    { num: 62, name: 'Redundant Branch Opts', fn: 'PHASE_OPTIMIZE_BRANCHES / optRedundantBranches', cat: 'opt', always: false, cond: 'OptimizationEnabled (doBranchOpt)',
+      note: 'Eliminates branches whose condition is known from the dominator path.',
+      tip: 'Uses VN + dominator information to prove that a branch condition at block B is already determined at B\'s dominator. Replaces the branch with an unconditional jump.' },
+    { num: 63, name: 'CSE',                   fn: 'PHASE_OPTIMIZE_VALNUM_CSES / optOptimizeCSEs', cat: 'opt', always: false, cond: 'OptimizationEnabled (doCse)',
+      note: 'Common Sub-Expression Elimination: extracts repeated computations into temporaries.',
+      tip: 'Identifies expressions with the same VN that are computed more than once. Extracts them into a CSE temp, computing the value once and reusing it.' },
+    { num: 64, name: 'Assertion Propagation', fn: 'PHASE_ASSERTION_PROP_MAIN / optAssertionPropMain', cat: 'opt', always: false, cond: 'OptimizationEnabled (doAssertionProp)',
+      note: 'Propagates type/range/null assertions derived from conditional tests.',
+      tip: 'Builds and propagates assertions (e.g. "V02 > 0 on true branch"). Used to sharpen range analysis, eliminate null checks, and fold conditions.' },
+    { num: 65, name: 'Optimize Index Checks', fn: 'PHASE_OPTIMIZE_INDEX_CHECKS / rangeCheckPhase', cat: 'opt', always: false, cond: 'OptimizationEnabled (doRangeAnalysis)',
+      note: 'Range analysis to eliminate or hoist array bounds checks.',
+      tip: 'Uses assertion prop and SSA range information to prove that array indices are always in bounds at certain points, eliminating the bounds-check branch.' },
+    { num: 66, name: 'Optimize Induction Variables', fn: 'PHASE_OPTIMIZE_INDUCTION_VARIABLES / optInductionVariables', cat: 'loop', always: false, cond: 'OptimizationEnabled (doOptimizeIVs)',
+      note: 'Strength reduction and widening of loop induction variables.',
+      tip: 'Analyses primary and derived induction variables in natural loops. Performs strength reduction (e.g. multiply → add) and considers downward-counted loops for improved codegen.' },
+    { num: 67, name: 'VN Dead Store Removal', fn: 'PHASE_VN_BASED_DEAD_STORE_REMOVAL / optVNBasedDeadStoreRemoval', cat: 'opt', always: false, cond: 'OptimizationEnabled (doVNBasedDeadStoreRemoval)',
+      note: 'Removes stores whose value is never subsequently loaded (VN-based).',
+      tip: 'Identifies stores that write a value that is never read (proven via VN). Removes the store, potentially enabling further DCE.' },
+    { num: 68, name: 'Range Check Cloning',   fn: 'PHASE_RANGE_CHECK_CLONING / optRangeCheckCloning', cat: 'opt', always: false, cond: 'OptimizationEnabled (doRangeCheckCloning)',
+      note: 'Clones blocks with multiple successive bounds checks to enable hoisting.',
+      tip: 'Identifies sequences of bounds checks on the same array and clones the block to allow the first check to cover subsequent ones.' },
+    { num: 69, name: 'VN Intrinsic Expansion', fn: 'PHASE_VN_BASED_INTRINSIC_EXPAND / fgVNBasedIntrinsicExpansion', cat: 'opt', always: false, cond: 'OptimizationEnabled (doVNBasedIntrinExpansion)',
+      note: 'Expands certain intrinsics where VN has proven argument values.',
+      tip: 'Uses VN data to constant-fold or specialize intrinsic calls (e.g. Math.Abs, BitOperations.PopCount) where argument ranges or values are known.' },
+    { num: 70, name: 'Opt Flow Graph Update', fn: 'PHASE_OPT_UPDATE_FLOW_GRAPH / fgUpdateFlowGraphPhase', cat: 'opt', always: false, cond: 'OptimizationEnabled && fgModified',
+      note: 'Updates the flow graph if any optimization modified it.',
+      tip: 'If fgModified was set during the optimization loop, runs fgUpdateFlowGraph to remove now-empty or unreachable blocks before the next iteration.' },
+  ]},
+
+  // ── GROUP: PRE-LAYOUT & LOWERING ──
+  { group: 'Pre-Layout, EH Round 3 & Lowering', gcat: 'codegen', phases: [
+    { num: 71, name: 'Stress Split Tree',     fn: 'PHASE_STRESS_SPLIT_TREE / StressSplitTree', cat: 'debug', always: false, cond: 'DEBUG only',
+      tip: 'DEBUG stress mode: randomly splits trees or removes comma nodes to stress-test the tree-splitter.', tags: ['debug'] },
+    { num: 72, name: 'Remove Empty Finally 3',fn: 'PHASE_EMPTY_FINALLY_3', cat: 'eh', always: true, tip: 'Third pass: removes any new empty finallys introduced by optimization.' },
+    { num: 73, name: 'Remove Empty Try 3',    fn: 'PHASE_EMPTY_TRY_3',     cat: 'eh', always: true, tip: 'Third pass.' },
+    { num: 74, name: 'Remove Empty Try/Catch/Fault 3', fn: 'PHASE_EMPTY_TRY_CATCH_FAULT_3', cat: 'eh', always: true, tip: 'Third pass.' },
+    { num: 75, name: 'Create EH Funclets',    fn: 'PHASE_CREATE_FUNCLETS / fgCreateFunclets', cat: 'eh', always: true,
+      note: 'Converts EH handlers into separate funclets (required on some platforms).',
+      tip: 'On platforms that use funclets (x64, arm64), lifts each EH handler into a separate function-like unit with its own prolog/epilog.' },
+    { num: 76, name: 'Expand Casts',          fn: 'PHASE_EXPAND_CASTS / fgLateCastExpansion', cat: 'morph', always: true,
+      tip: 'Expands cast operations that require helpers or control-flow (e.g. checked int→float).' },
+    { num: 77, name: 'Expand Runtime Lookups',fn: 'PHASE_EXPAND_RTLOOKUPS / fgExpandRuntimeLookups', cat: 'morph', always: true,
+      note: 'Expands generic dictionary lookups into inline fast-path + helper slow-path.',
+      tip: 'Rewrites RT_LOOKUP nodes into an inline fast-path that checks a slot in the generic dictionary, and a slow-path call to the JIT helper.' },
+    { num: 78, name: 'Expand Static Init',    fn: 'PHASE_EXPAND_STATIC_INIT / fgExpandStaticInit', cat: 'morph', always: true,
+      note: 'Partially inlines static class constructors.',
+      tip: 'For static fields, inserts an inline check of the class-init flag before calling the class constructor, avoiding the full helper call in the common case.' },
+    { num: 79, name: 'Expand Thread Local Access', fn: 'PHASE_EXPAND_TLS / fgExpandThreadLocalAccess', cat: 'morph', always: true,
+      tip: 'Expands thread-local storage accesses into the appropriate platform TLS sequence.' },
+    { num: 80, name: 'Expand Stack Array Alloc', fn: 'PHASE_EXPAND_STACK_ARR / fgExpandStackArrayAllocations', cat: 'morph', always: true,
+      tip: 'Lowers stack-allocated array nodes (from object allocator) into actual stack space reservations.' },
+    { num: 81, name: 'Insert GC Polls',       fn: 'PHASE_INSERT_GC_POLLS / fgInsertGCPolls', cat: 'codegen', always: true,
+      note: 'Inserts GC polling points to ensure the GC can suspend the thread.',
+      tip: 'On platforms/tiers that need explicit polls, inserts GC poll calls at loop back-edges and method entries so the GC can suspend threads for collection.' },
+    { num: 82, name: 'Switch Recognition',    fn: 'PHASE_SWITCH_RECOGNITION / optRecognizeAndOptimizeSwitchJumps', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Converts chains of conditionals into switch dispatch; peels first cases.',
+      tip: 'Recognises if/else chains over the same integer variable and converts them to a single switch instruction. Also peels the most common case to a direct branch.' },
+    { num: 83, name: 'Optimize Bools',        fn: 'PHASE_OPTIMIZE_BOOLS / optOptimizeBools', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Merges back-to-back conditional jumps into compound conditions.',
+      tip: 'Looks for adjacent BBJ_COND blocks testing the same variable and merges them into a single test with AND/OR, reducing the branch count.' },
+    { num: 84, name: 'If Conversion',         fn: 'PHASE_IF_CONVERSION / optIfConversion',   cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Converts simple if/else into conditional move (cmov) instructions.',
+      tip: 'Identifies diamond-shaped CFG patterns (if/else with small bodies) that can be expressed as a conditional select (CSEL on arm64, CMOV on x86), removing the branch.' },
+    { num: 85, name: 'Optimize Pre-Layout',   fn: 'PHASE_OPTIMIZE_PRE_LAYOUT / optOptimizePreLayout', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      note: 'Final flow-graph optimizations before block reordering.',
+      tip: 'Compacts empty pass-through blocks, merges single-predecessor/successor chains, and performs other cleanup to give the layout algorithm a clean graph to work with.' },
+    { num: 86, name: 'Repair Profile (pre-layout)', fn: 'PHASE_REPAIR_PROFILE_PRE_LAYOUT / fgRepairProfile', cat: 'opt', always: false, cond: 'OptimizationEnabled',
+      tip: 'Final profile consistency check before the backend starts.' },
+    { num: 87, name: 'Rationalize IR',        fn: 'PHASE_RATIONALIZE / Rationalizer::Run()', cat: 'codegen', always: true,
+      note: 'Converts HIR trees to LIR (Low-level IR): linearises trees, inserts embedded statements.',
+      tip: 'The Rationalizer converts the tree-based HIR into LIR (doubly linked list of nodes per block). After this, fgNodeThreading = LIR and the structure is ready for Lowering/LSRA.' },
+    { num: 88, name: 'Async Transform',       fn: 'PHASE_ASYNC / TransformAsync',            cat: 'morph', always: false, cond: 'compIsAsync()',
+      tip: 'Transforms async state machine resumption paths. Only for async methods.' },
+    { num: 89, name: 'GS Cookie',             fn: 'PHASE_GS_COOKIE / gsPhase',               cat: 'codegen', always: true,
+      note: 'Inserts stack-buffer-overflow (GS) security cookie checks.',
+      tip: 'If the method has unsafe buffers that could be overflowed, inserts a GS cookie store in the prolog and a check in the epilog to detect stack corruption.' },
+    { num: 90, name: 'WASM SCC Transform',    fn: 'PHASE_WASM_TRANSFORM_SCCS / fgWasmTransformSccs', cat: 'codegen', always: false, cond: 'TARGET_WASM',
+      tip: 'WebAssembly: transforms strongly-connected components in the CFG into reducible flow.', tags: ['platform', 'wasm'] },
+    { num: 91, name: 'Lowering',              fn: 'PHASE_LOWERING / Lowering::Run()',        cat: 'codegen', always: true,
+      note: 'Target-specific lowering: expands nodes into machine-representable forms.',
+      tip: 'The Lowering pass rewrites LIR nodes into target-specific sequences (e.g. address-mode formation on x86, LDP/STP on arm64). Also marks "containable" nodes.' },
+    { num: 92, name: 'Linear Scan RA',        fn: 'PHASE_LINEAR_SCAN / m_regAlloc->doRegisterAllocation()', cat: 'codegen', always: true,
+      note: 'Assigns physical registers to all virtual register intervals.',
+      tip: 'LSRA: builds live intervals for all values, linearly scans them in block order, and assigns physical registers. Inserts spills and reloads where needed.' },
+    { num: 93, name: 'Optimize Layout',       fn: 'PHASE_OPTIMIZE_LAYOUT / fgSearchImprovedLayout', cat: 'codegen', always: false, cond: 'OptimizationEnabled (non-WASM)',
+      note: 'Reorders basic blocks for better branch prediction and I-cache locality.',
+      tip: 'Runs a block-layout algorithm (e.g. chains via profile-guided reordering) to minimise taken branches in the common case and improve instruction-cache utilisation.' },
+    { num: 94, name: 'Optimize Post-Layout',  fn: 'PHASE_OPTIMIZE_POST_LAYOUT / optOptimizePostLayout', cat: 'codegen', always: false, cond: 'OptimizationEnabled (non-WASM)',
+      tip: 'Post-layout peephole and branch-distance optimizations that depend on final block order.' },
+    { num: 95, name: 'Determine Cold Block',  fn: 'PHASE_DETERMINE_FIRST_COLD_BLOCK / fgDetermineFirstColdBlock', cat: 'codegen', always: false, cond: 'OptimizationEnabled (non-WASM)',
+      note: 'Marks the start of the cold region for hot/cold code splitting.',
+      tip: 'Identifies the first block that belongs to the cold code section (rarely executed). Everything after it will be emitted in a separate cold code segment.' },
+    { num: 96, name: 'Align Loops',           fn: 'PHASE_ALIGN_LOOPS / placeLoopAlignInstructions', cat: 'loop', always: true,
+      note: 'Inserts NOP-padding before hot loop tops to align them to cache-line boundaries.',
+      tip: 'For each innermost loop whose weight meets the threshold (compJitAlignLoopMinBlockWeight), marks a preceding block with BBF_HAS_ALIGN. The emitter inserts padding NOPs.' },
+    { num: 97, name: 'Code Generation',       fn: 'codeGen->genGenerateCode()',             cat: 'codegen', always: true,
+      note: 'Final emission: translates every LIR node into machine instructions.',
+      tip: 'The code generator walks the LIR in block order and emits the final machine code, prolog/epilog sequences, GC info, EH tables, and unwind information.' },
+  ]},
+];
+
+// Build phase index
+let phaseCount = 0;
+PHASES.forEach(g => phaseCount += g.phases.length);
+
+// ── RENDER ──
+function render(filter) {
+  const container = document.getElementById('pipeline');
+  container.innerHTML = '';
+  let seq = 0;
+
+  PHASES.forEach((grp, gi) => {
+    const filtered = grp.phases.filter(p => {
+      if (filter === 'opt') return p.cond;
+      if (filter === 'always') return p.always;
+      if (filter && filter.startsWith('cat:')) return p.cat === filter.slice(4);
+      return true;
+    });
+    if (filtered.length === 0) return;
+
+    const groupEl = document.createElement('div');
+    groupEl.className = 'group';
+    groupEl.dataset.cat = grp.gcat;
+
+    const header = document.createElement('div');
+    header.className = 'group-header';
+    header.innerHTML = `
+      <span class="group-name">${grp.group}</span>
+      <span class="group-count">${filtered.length} phases</span>
+      <span class="group-chevron">▼</span>
+    `;
+    header.onclick = () => {
+      groupEl.classList.toggle('collapsed');
+      const body = groupEl.querySelector('.group-body');
+      if (!groupEl.classList.contains('collapsed')) {
+        body.style.maxHeight = body.scrollHeight + 'px';
+      } else {
+        body.style.maxHeight = '0';
+      }
+    };
+
+    const body = document.createElement('div');
+    body.className = 'group-body';
+
+    filtered.forEach((p, pi) => {
+      seq++;
+      const row = document.createElement('div');
+      row.className = 'phase';
+      row.dataset.cat = p.cat;
+      row.style.animationDelay = `${(gi * 50 + pi * 20)}ms`;
+
+      const tagsHtml = (p.tags || []).map(t => `<span class="tag tag-${t}">${t}</span>`).join('');
+      const condHtml = p.cond ? `<span class="tag tag-cond">if: ${p.cond}</span>` : '';
+      const debugHtml = p.cat === 'debug' ? `<span class="tag tag-debug">debug</span>` : '';
+      const loopHtml = p.cat === 'loop' ? `<span class="tag tag-loop">loop</span>` : '';
+
+      row.innerHTML = `
+        <span class="phase-num">${seq}</span>
+        <div class="phase-body">
+          <div class="phase-name">${p.name}${tagsHtml}</div>
+          <div class="phase-fn"><span>//</span> ${p.fn}</div>
+          ${p.note ? `<div class="phase-note">${p.note}</div>` : ''}
+        </div>
+        <div class="phase-tags">${condHtml}${debugHtml}${loopHtml}</div>
+      `;
+
+      // Tooltip
+      if (p.tip) {
+        row.addEventListener('mouseenter', (e) => showTip(e, p.name, p.tip));
+        row.addEventListener('mousemove', moveTip);
+        row.addEventListener('mouseleave', hideTip);
+        row.style.cursor = 'help';
+      }
+
+      body.appendChild(row);
+    });
+
+    body.style.maxHeight = body.scrollHeight + 'px';
+    // We need to set it after render; use timeout
+    setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 10);
+
+    groupEl.appendChild(header);
+    groupEl.appendChild(body);
+    container.appendChild(groupEl);
+  });
+
+  // update counts
+  document.querySelectorAll('[data-seq]').forEach((_, i) => {});
+}
+
+// ── TOOLTIP ──
+const tooltip = document.getElementById('tooltip');
+function showTip(e, title, body) {
+  document.getElementById('tt-title').textContent = title;
+  document.getElementById('tt-body').textContent = body;
+  tooltip.classList.add('visible');
+  moveTip(e);
+}
+function moveTip(e) {
+  const x = e.clientX + 16, y = e.clientY + 12;
+  const tw = 320, th = 120;
+  tooltip.style.left = (x + tw > window.innerWidth ? e.clientX - tw - 8 : x) + 'px';
+  tooltip.style.top  = (y + th > window.innerHeight ? e.clientY - th - 8 : y) + 'px';
+}
+function hideTip() { tooltip.classList.remove('visible'); }
+
+// ── FILTER ──
+let currentFilter = null;
+function filterAll(btn) {
+  currentFilter = null;
+  setActiveBtn(btn);
+  render(null);
+}
+function filterOpt(btn) {
+  currentFilter = 'opt';
+  setActiveBtn(btn);
+  render('opt');
+}
+function filterAlways(btn) {
+  currentFilter = 'always';
+  setActiveBtn(btn);
+  render('always');
+}
+function filterCat(cat) {
+  currentFilter = 'cat:' + cat;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  render('cat:' + cat);
+}
+function setActiveBtn(btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+function expandAll() {
+  document.querySelectorAll('.group').forEach(g => {
+    g.classList.remove('collapsed');
+    const body = g.querySelector('.group-body');
+    body.style.maxHeight = body.scrollHeight + 'px';
+  });
+}
+function collapseAll() {
+  document.querySelectorAll('.group').forEach(g => {
+    g.classList.add('collapsed');
+    g.querySelector('.group-body').style.maxHeight = '0';
+  });
+}
+
+render(null);
+</script>
+</body>
+</html>

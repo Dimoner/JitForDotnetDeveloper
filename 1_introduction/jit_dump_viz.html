@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RyuJIT Compilation — InlineDemo::SumTrash</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0d12;
+    --surface: #111620;
+    --surface2: #161c2a;
+    --border: #1e2a3a;
+    --accent: #00e5ff;
+    --accent2: #ff6b35;
+    --accent3: #a855f7;
+    --accent4: #22c55e;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  .noise {
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none; z-index: 0;
+  }
+  .container { position: relative; z-index: 1; max-width: 1400px; margin: 0 auto; padding: 2rem; }
+
+  /* HEADER */
+  header { margin-bottom: 3rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border); }
+  .badge { display: inline-block; background: var(--accent); color: #000; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.15em; padding: 0.2rem 0.6rem; border-radius: 2px; margin-bottom: 1rem; text-transform: uppercase; }
+  header h1 { font-family: 'Syne', sans-serif; font-size: clamp(1.4rem, 3vw, 2.2rem); font-weight: 800; color: var(--text); line-height: 1.1; }
+  header h1 span { color: var(--accent); }
+  .meta-row { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+  .meta-tag { font-size: 0.72rem; color: var(--muted); }
+  .meta-tag strong { color: var(--text); }
+
+  /* NAV */
+  .nav-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 2rem; overflow-x: auto; }
+  .nav-tab { background: none; border: none; color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 0.75rem 1.2rem; cursor: pointer; border-bottom: 2px solid transparent; letter-spacing: 0.05em; white-space: nowrap; transition: all 0.2s; }
+  .nav-tab:hover { color: var(--text); }
+  .nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* PANELS */
+  .panel { display: none; animation: fadeIn 0.3s ease; }
+  .panel.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* CARDS */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  .card-title { font-family: 'Syne', sans-serif; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 1rem; }
+
+  /* GRID */
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+  .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+  .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; }
+
+  /* KPI */
+  .kpi { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; text-align: center; }
+  .kpi-value { font-family: 'Syne', sans-serif; font-size: 1.8rem; font-weight: 800; line-height: 1; }
+  .kpi-label { font-size: 0.65rem; color: var(--muted); margin-top: 0.35rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .kpi-sub { font-size: 0.65rem; color: var(--muted); margin-top: 0.2rem; }
+  .c-cyan { color: var(--accent); }
+  .c-orange { color: var(--accent2); }
+  .c-purple { color: var(--accent3); }
+  .c-green { color: var(--accent4); }
+  .c-warn { color: var(--warn); }
+
+  /* CFG */
+  .cfg-svg-container { overflow: auto; }
+  svg text { font-family: 'JetBrains Mono', monospace; }
+
+  /* PHASE TIMELINE */
+  .phase-list { display: flex; flex-direction: column; gap: 0; }
+  .phase-item {
+    display: grid; grid-template-columns: 2fr 1fr 30px;
+    align-items: center; gap: 1rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    transition: background 0.15s;
+  }
+  .phase-item:hover { background: var(--surface2); }
+  .phase-item.changed { border-left: 2px solid var(--accent2); padding-left: 0.5rem; }
+  .phase-name { color: var(--text); }
+  .phase-status { text-align: right; }
+  .tag { display: inline-block; font-size: 0.6rem; padding: 0.15rem 0.5rem; border-radius: 3px; font-weight: 600; letter-spacing: 0.05em; }
+  .tag-nochange { background: #1e2a3a; color: var(--muted); }
+  .tag-changed { background: #2d1a0e; color: var(--accent2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; margin: 0 auto; }
+  .dot-no { background: var(--border); }
+  .dot-yes { background: var(--accent2); }
+
+  /* LOCALS TABLE */
+  table { width: 100%; border-collapse: collapse; font-size: 0.73rem; }
+  th { text-align: left; font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
+  td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #1a2232; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+  .reg { color: var(--accent); }
+  .vartype { color: var(--accent4); }
+  .varname { color: var(--accent3); }
+
+  /* CODE BLOCK */
+  .code-block { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; font-size: 0.72rem; line-height: 1.9; overflow-x: auto; white-space: pre; }
+  .asm-addr { color: var(--muted); user-select: none; }
+  .asm-instr { color: var(--accent2); font-weight: 600; }
+  .asm-op { color: var(--accent4); }
+  .asm-comment { color: #3d5a70; }
+  .asm-label { color: var(--accent3); font-weight: 600; }
+  .asm-loop { color: var(--accent); font-weight: 600; }
+
+  /* ALLOC BAR CHART */
+  .alloc-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.3rem 0; font-size: 0.7rem; }
+  .alloc-label { width: 160px; flex-shrink: 0; color: var(--muted); text-align: right; }
+  .alloc-bar-wrap { flex: 1; background: var(--border); border-radius: 2px; height: 6px; overflow: hidden; }
+  .alloc-bar { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+  .alloc-val { width: 60px; flex-shrink: 0; color: var(--text); text-align: right; }
+
+  /* SSA VN */
+  .ssa-entry { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.3rem 0; font-size: 0.72rem; border-bottom: 1px solid #1a2232; }
+  .ssa-var { color: var(--accent3); font-weight: 600; width: 80px; }
+  .ssa-desc { color: var(--muted); flex: 1; }
+  .ssa-uses { color: var(--accent4); margin-left: auto; }
+
+  /* IL CODE */
+  .il-line { display: flex; gap: 1rem; padding: 0.25rem 0; font-size: 0.72rem; }
+  .il-off { color: var(--muted); width: 60px; flex-shrink: 0; }
+  .il-op { color: var(--accent2); }
+  .il-arg { color: var(--accent4); }
+
+  /* SCROLLBAR */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* LOOP BADGE */
+  .loop-highlight { background: linear-gradient(135deg, #0f2030 0%, #0f1a25 100%); border: 1px solid #1a3a5a; border-radius: 6px; padding: 1rem; }
+  .loop-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent); margin-bottom: 0.4rem; }
+
+  /* OPTIMIZATION BANNER */
+  .opt-banner { background: linear-gradient(90deg, #0d1f12 0%, #0a1810 100%); border: 1px solid #1a4a2a; border-left: 3px solid var(--accent4); padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.75rem; color: var(--accent4); margin-bottom: 1rem; }
+  .warn-banner { background: #1a130a; border: 1px solid #3a2a0a; border-left: 3px solid var(--warn); padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.75rem; color: var(--warn); margin-bottom: 1rem; }
+
+  /* LIVENESS */
+  .live-grid { display: grid; grid-template-columns: 60px repeat(6, 1fr); gap: 2px; font-size: 0.65rem; }
+  .live-header { background: var(--surface2); padding: 0.3rem 0.4rem; text-align: center; color: var(--muted); border-radius: 2px; }
+  .live-bb { background: var(--surface2); padding: 0.3rem 0.4rem; color: var(--accent3); font-weight: 600; }
+  .live-cell { padding: 0.3rem 0.4rem; text-align: center; border-radius: 2px; }
+  .live-in  { background: #0e2030; color: var(--accent); }
+  .live-out { background: #0e2010; color: var(--accent4); }
+  .live-dead { background: var(--border); color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="noise"></div>
+<div class="container">
+
+  <header>
+    <div class="badge">RyuJIT · Unix arm64 · FullOpts</div>
+    <h1><span>InlineDemo</span>::SumTrash<span style="color:var(--muted);font-weight:400">(int,int,int,int,int) : int</span></h1>
+    <div class="meta-row">
+      <span class="meta-tag">MethodHash <strong>6f00a7b9</strong></span>
+      <span class="meta-tag">Code size <strong style="color:var(--accent)">72 bytes</strong></span>
+      <span class="meta-tag">PerfScore <strong style="color:var(--accent2)">23.5</strong></span>
+      <span class="meta-tag">Instructions <strong>20</strong></span>
+      <span class="meta-tag">Loops <strong>1</strong></span>
+      <span class="meta-tag">Alloc <strong>104,239 bytes</strong></span>
+    </div>
+  </header>
+
+  <div class="nav-tabs">
+    <button class="nav-tab active" onclick="showTab('overview')">Overview</button>
+    <button class="nav-tab" onclick="showTab('cfg')">Control Flow</button>
+    <button class="nav-tab" onclick="showTab('il')">IL + Locals</button>
+    <button class="nav-tab" onclick="showTab('phases')">JIT Phases</button>
+    <button class="nav-tab" onclick="showTab('ssa')">SSA / VN</button>
+    <button class="nav-tab" onclick="showTab('liveness')">Liveness</button>
+    <button class="nav-tab" onclick="showTab('asm')">ARM64 Assembly</button>
+    <button class="nav-tab" onclick="showTab('alloc')">Allocations</button>
+  </div>
+
+  <!-- ═══ OVERVIEW ═══ -->
+  <div id="tab-overview" class="panel active">
+    <div class="grid-4" style="margin-bottom:1.5rem">
+      <div class="kpi"><div class="kpi-value c-cyan">72</div><div class="kpi-label">Code bytes</div><div class="kpi-sub">ARM64</div></div>
+      <div class="kpi"><div class="kpi-value c-orange">23.5</div><div class="kpi-label">PerfScore</div><div class="kpi-sub">Estimated</div></div>
+      <div class="kpi"><div class="kpi-value c-purple">20</div><div class="kpi-label">Instructions</div><div class="kpi-sub">incl. prolog/epilog</div></div>
+      <div class="kpi"><div class="kpi-value c-green">1</div><div class="kpi-label">Natural Loop</div><div class="kpi-sub">L00 inverted</div></div>
+    </div>
+    <div class="grid-4" style="margin-bottom:1.5rem">
+      <div class="kpi"><div class="kpi-value" style="color:var(--warn)">5</div><div class="kpi-label">Parameters</div><div class="kpi-sub">V00–V04</div></div>
+      <div class="kpi"><div class="kpi-value c-cyan">6</div><div class="kpi-label">SSA Vars</div><div class="kpi-sub">tracked</div></div>
+      <div class="kpi"><div class="kpi-value c-orange">4</div><div class="kpi-label">Local Assertions</div></div>
+      <div class="kpi"><div class="kpi-value" style="color:#ef4444">0</div><div class="kpi-label">Inlines</div><div class="kpi-sub">None attempted</div></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Method Signature</div>
+        <div class="code-block"><span class="asm-label">static int</span> SumTrash(
+  int arg0,   <span class="asm-comment">// x0</span>
+  int arg1,   <span class="asm-comment">// x1</span>
+  int arg2,   <span class="asm-comment">// x2 — loop bound</span>
+  int arg3,   <span class="asm-comment">// x3</span>
+  int arg4    <span class="asm-comment">// x4 (unused in loop)</span>
+)
+<span class="asm-comment">// Computes: sum of (i + arg0 + arg1 + arg3)</span>
+<span class="asm-comment">// for i in [0, arg2)</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Key JIT Optimizations Applied</div>
+        <div class="opt-banner">✓ Loop Inversion — condition hoisted to preheader (BB01), loop now self-loops on BB05</div>
+        <div class="opt-banner">✓ Loop inversion: cost 7 ≤ threshold 34, estimated 8 iterations</div>
+        <div class="opt-banner">✓ Assertion Propagation — GE(loc1, 0) simplified initial condition to LE(arg2, 0)</div>
+        <div class="opt-banner">✓ SSA / Value Numbering — 14 SSA defs, 6 tracked vars, PHI functions at BB02 &amp; BB06</div>
+        <div class="warn-banner">⚠ V04 (arg4) is live only at entry; not used inside the loop body</div>
+        <div class="warn-banner">⚠ IV strength reduction skipped: step value not constant after symbolic analysis</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Compilation Pipeline Summary</div>
+      <div class="grid-3">
+        <div class="loop-highlight">
+          <div class="loop-label">Phase 1 — Importation</div>
+          <div style="font-size:0.72rem;color:var(--text)">IL decoded → 4 basic blocks (BB01–BB04). Loop detected: BB03 header, BB02 body. Back-edge BB02→BB03.</div>
+        </div>
+        <div class="loop-highlight">
+          <div class="loop-label">Phase 2 — Morph + Opts</div>
+          <div style="font-size:0.72rem;color:var(--text)">Loop inverted into BB05 (body) + BB01 (preheader check). SSA built, VNs assigned, assertions propagated.</div>
+        </div>
+        <div class="loop-highlight">
+          <div class="loop-label">Phase 3 — LSRA + Emit</div>
+          <div style="font-size:0.72rem;color:var(--text)">Linear Scan Register Allocation. BB05 self-loop emitted. 6 add instructions in hot path. 72 bytes total.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ CFG ═══ -->
+  <div id="tab-cfg" class="panel">
+    <div class="card">
+      <div class="card-title">Control Flow Graph — After Loop Inversion (Final Layout)</div>
+      <div class="cfg-svg-container">
+        <svg width="760" height="520" viewBox="0 0 760 520" style="display:block;margin:0 auto">
+          <defs>
+            <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#64748b"/>
+            </marker>
+            <marker id="arr-hot" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#00e5ff"/>
+            </marker>
+            <marker id="arr-back" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#ff6b35"/>
+            </marker>
+            <filter id="glow">
+              <feGaussianBlur stdDeviation="3" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+
+          <!-- BB01 — Preheader -->
+          <rect x="280" y="30" width="200" height="100" rx="6" fill="#111620" stroke="#1e2a3a" stroke-width="1.5"/>
+          <rect x="280" y="30" width="200" height="6" rx="3" fill="#a855f7"/>
+          <text x="380" y="58" text-anchor="middle" fill="#a855f7" font-size="11" font-weight="bold">BB01 [0000] — Preheader</text>
+          <text x="380" y="74" text-anchor="middle" fill="#64748b" font-size="9">weight=1, IL[000..006)</text>
+          <text x="380" y="90" text-anchor="middle" fill="#e2e8f0" font-size="9">sum=0; i=0;</text>
+          <text x="380" y="105" text-anchor="middle" fill="#e2e8f0" font-size="9">IF arg2 ≤ 0 → skip loop</text>
+          <text x="380" y="120" text-anchor="middle" fill="#64748b" font-size="8">(cond — loop inversion guard)</text>
+
+          <!-- BB05 — Loop Body (hot) -->
+          <rect x="270" y="220" width="220" height="130" rx="6" fill="#0e1a22" stroke="#1a3a5a" stroke-width="2"/>
+          <rect x="270" y="220" width="220" height="6" rx="3" fill="#00e5ff"/>
+          <text x="380" y="248" text-anchor="middle" fill="#00e5ff" font-size="11" font-weight="bold">BB05 [0004] — Loop Body 🔥</text>
+          <text x="380" y="264" text-anchor="middle" fill="#64748b" font-size="9">weight=4, IL[006..018)</text>
+          <text x="380" y="280" text-anchor="middle" fill="#e2e8f0" font-size="9">sum += i + arg0 + arg1 + arg3</text>
+          <text x="380" y="296" text-anchor="middle" fill="#e2e8f0" font-size="9">i += 1</text>
+          <text x="380" y="312" text-anchor="middle" fill="#e2e8f0" font-size="9">IF i &lt; arg2 → loop back</text>
+          <text x="380" y="328" text-anchor="middle" fill="#64748b" font-size="8">(bwd — self-loop)</text>
+          <text x="380" y="343" text-anchor="middle" fill="#ff6b35" font-size="8">← critical block; loop-aligned</text>
+
+          <!-- BB04 — Return -->
+          <rect x="280" y="430" width="200" height="70" rx="6" fill="#111620" stroke="#1e2a3a" stroke-width="1.5"/>
+          <rect x="280" y="430" width="200" height="6" rx="3" fill="#22c55e"/>
+          <text x="380" y="458" text-anchor="middle" fill="#22c55e" font-size="11" font-weight="bold">BB04 [0003] — Return</text>
+          <text x="380" y="474" text-anchor="middle" fill="#64748b" font-size="9">weight=1, IL[018..01A)</text>
+          <text x="380" y="490" text-anchor="middle" fill="#e2e8f0" font-size="9">return sum  (V05 / x4 → x0)</text>
+
+          <!-- EDGES -->
+          <!-- BB01 → BB05 (taken — loop enter) -->
+          <line x1="370" y1="130" x2="360" y2="218" stroke="#00e5ff" stroke-width="1.8" marker-end="url(#arr-hot)"/>
+          <text x="330" y="180" fill="#00e5ff" font-size="9">0.5 enter</text>
+
+          <!-- BB01 → BB04 (not taken — skip) -->
+          <line x1="480" y1="95" x2="620" y2="95" stroke="#64748b" stroke-width="1.2" marker-end="url(#arr)"/>
+          <line x1="620" y1="95" x2="620" y2="462" stroke="#64748b" stroke-width="1.2"/>
+          <line x1="620" y1="462" x2="482" y2="462" stroke="#64748b" stroke-width="1.2" marker-end="url(#arr)"/>
+          <text x="630" y="280" fill="#64748b" font-size="9" transform="rotate(90,630,280)">0.5 skip (arg2≤0)</text>
+
+          <!-- BB05 → BB05 (back edge) -->
+          <path d="M 270 300 Q 140 310 140 285 Q 140 260 270 270" fill="none" stroke="#ff6b35" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr-back)"/>
+          <text x="60" y="290" fill="#ff6b35" font-size="9">0.5 back</text>
+
+          <!-- BB05 → BB04 (exit) -->
+          <line x1="380" y1="350" x2="380" y2="428" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="388" y="395" fill="#22c55e" font-size="9">0.5 exit</text>
+
+          <!-- Legend -->
+          <rect x="10" y="440" width="220" height="70" rx="4" fill="#111620" stroke="#1e2a3a"/>
+          <text x="20" y="458" fill="#64748b" font-size="9" font-weight="bold">LEGEND</text>
+          <line x1="20" y1="468" x2="50" y2="468" stroke="#00e5ff" stroke-width="2"/>
+          <text x="55" y="472" fill="#e2e8f0" font-size="8">Loop enter edge</text>
+          <line x1="20" y1="480" x2="50" y2="480" stroke="#ff6b35" stroke-width="2" stroke-dasharray="4,2"/>
+          <text x="55" y="484" fill="#e2e8f0" font-size="8">Back edge (self-loop)</text>
+          <line x1="20" y1="492" x2="50" y2="492" stroke="#22c55e" stroke-width="2"/>
+          <text x="55" y="496" fill="#e2e8f0" font-size="8">Exit edge</text>
+          <line x1="20" y1="504" x2="50" y2="504" stroke="#64748b" stroke-width="1.5"/>
+          <text x="55" y="508" fill="#e2e8f0" font-size="8">Skip (arg2 ≤ 0)</text>
+
+          <!-- Block count annotation -->
+          <text x="520" y="390" fill="#64748b" font-size="8">Final layout: 3 blocks</text>
+          <text x="520" y="403" fill="#64748b" font-size="8">(BB02+BB03+BB06 removed</text>
+          <text x="520" y="416" fill="#64748b" font-size="8"> by compaction)</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">Block Details</div>
+        <table>
+          <thead><tr><th>Block</th><th>IL Range</th><th>Weight</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td class="varname">BB01</td><td>[000..006)</td><td>1</td><td>Preheader + guard</td></tr>
+            <tr><td class="varname">BB05</td><td>[006..018)</td><td class="c-orange">4</td><td>Loop body (hot)</td></tr>
+            <tr><td class="varname">BB04</td><td>[018..01A)</td><td>1</td><td>Return</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-title">Loop L00 Structure</div>
+        <div style="font-size:0.73rem;line-height:1.9;color:var(--text)">
+          <div>Header: <span class="c-cyan">BB05</span> (after inversion)</div>
+          <div>Members: <span class="c-cyan">BB05</span> (1 block, self-loop)</div>
+          <div>Entry: <span class="c-purple">BB01</span> → <span class="c-cyan">BB05</span></div>
+          <div>Exit: <span class="c-cyan">BB05</span> → <span class="c-green">BB04</span></div>
+          <div>Back: <span class="c-cyan">BB05</span> → <span class="c-cyan">BB05</span></div>
+          <div style="margin-top:0.5rem;color:var(--muted)">Inversion threshold cost: 7 ≤ 34</div>
+          <div style="color:var(--muted)">Estimated iterations: 8.0</div>
+          <div style="color:var(--muted)">Loop aligned (4 bytes padding)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ IL + LOCALS ═══ -->
+  <div id="tab-il" class="panel">
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">IL Bytecode (26 bytes, 24 instructions)</div>
+        <div class="code-block"><span class="asm-comment">// Initialization block (BB01)</span>
+<span class="il-off">IL_0000</span> <span class="il-op">ldc.i4.0</span>
+<span class="il-off">IL_0001</span> <span class="il-op">stloc.0</span>         <span class="asm-comment">// sum = 0</span>
+<span class="il-off">IL_0002</span> <span class="il-op">ldc.i4.0</span>
+<span class="il-off">IL_0003</span> <span class="il-op">stloc.1</span>         <span class="asm-comment">// i = 0</span>
+<span class="il-off">IL_0004</span> <span class="il-op">br.s</span>   <span class="il-arg">IL_0014</span>  <span class="asm-comment">// jump to condition</span>
+
+<span class="asm-comment">// Loop body (BB02)</span>
+<span class="il-off">IL_0006</span> <span class="il-op">ldloc.0</span>
+<span class="il-off">IL_0007</span> <span class="il-op">ldloc.1</span>
+<span class="il-off">IL_0008</span> <span class="il-op">ldarg.0</span>
+<span class="il-off">IL_0009</span> <span class="il-op">add</span>              <span class="asm-comment">// loc1 + arg0</span>
+<span class="il-off">IL_000a</span> <span class="il-op">ldarg.1</span>
+<span class="il-off">IL_000b</span> <span class="il-op">add</span>              <span class="asm-comment">// + arg1</span>
+<span class="il-off">IL_000c</span> <span class="il-op">ldarg.3</span>
+<span class="il-off">IL_000d</span> <span class="il-op">add</span>              <span class="asm-comment">// + arg3</span>
+<span class="il-off">IL_000e</span> <span class="il-op">add</span>              <span class="asm-comment">// + loc0</span>
+<span class="il-off">IL_000f</span> <span class="il-op">stloc.0</span>         <span class="asm-comment">// sum = ...</span>
+<span class="il-off">IL_0010</span> <span class="il-op">ldloc.1</span>
+<span class="il-off">IL_0011</span> <span class="il-op">ldc.i4.1</span>
+<span class="il-off">IL_0012</span> <span class="il-op">add</span>
+<span class="il-off">IL_0013</span> <span class="il-op">stloc.1</span>         <span class="asm-comment">// i++</span>
+
+<span class="asm-comment">// Condition block (BB03)</span>
+<span class="il-off">IL_0014</span> <span class="il-op">ldloc.1</span>
+<span class="il-off">IL_0015</span> <span class="il-op">ldarg.2</span>
+<span class="il-off">IL_0016</span> <span class="il-op">blt.s</span>  <span class="il-arg">IL_0006</span>  <span class="asm-comment">// if i < arg2 → loop</span>
+
+<span class="asm-comment">// Return (BB04)</span>
+<span class="il-off">IL_0018</span> <span class="il-op">ldloc.0</span>
+<span class="il-off">IL_0019</span> <span class="il-op">ret</span>              <span class="asm-comment">// return sum</span></div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">Local Variables</div>
+          <table>
+            <thead><tr><th>Var</th><th>Name</th><th>Type</th><th>Role</th><th>Final Reg</th></tr></thead>
+            <tbody>
+              <tr><td class="varname">V00</td><td>arg0</td><td class="vartype">int</td><td>arg0</td><td class="reg">x0</td></tr>
+              <tr><td class="varname">V01</td><td>arg1</td><td class="vartype">int</td><td>arg1</td><td class="reg">x1</td></tr>
+              <tr><td class="varname">V02</td><td>arg2</td><td class="vartype">int</td><td>loop bound</td><td class="reg">x2</td></tr>
+              <tr><td class="varname">V03</td><td>arg3</td><td class="vartype">int</td><td>arg3</td><td class="reg">x3</td></tr>
+              <tr><td class="varname">V04</td><td>arg4</td><td class="vartype">int</td><td>unused in loop</td><td class="reg">x4 (entry only)</td></tr>
+              <tr><td class="varname">V05</td><td>loc0</td><td class="vartype">int</td><td>accumulator (sum)</td><td class="reg">x4</td></tr>
+              <tr><td class="varname">V06</td><td>loc1</td><td class="vartype">int</td><td>loop counter (i)</td><td class="reg">x5</td></tr>
+              <tr><td class="varname">V07</td><td>OutArgs</td><td class="vartype">struct&lt;0&gt;</td><td>addr-exposed, DNER</td><td class="reg">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card" style="margin-top:1.5rem">
+          <div class="card-title">Variable Live Ranges (Debug)</div>
+          <table>
+            <thead><tr><th>Var</th><th>From</th><th>To</th><th>Register</th></tr></thead>
+            <tbody>
+              <tr><td class="varname">V00</td><td>0x00</td><td>0x3C</td><td class="reg">x0</td></tr>
+              <tr><td class="varname">V01</td><td>0x00</td><td>0x3C</td><td class="reg">x1</td></tr>
+              <tr><td class="varname">V02</td><td>0x00</td><td>0x3C</td><td class="reg">x2</td></tr>
+              <tr><td class="varname">V03</td><td>0x00</td><td>0x3C</td><td class="reg">x3</td></tr>
+              <tr><td class="varname">V04</td><td>0x00</td><td>0x08</td><td class="reg">x4</td></tr>
+              <tr><td class="varname">V05</td><td>0x0C</td><td>0x20</td><td class="reg">x4</td></tr>
+              <tr><td class="varname">V05</td><td>0x30</td><td>0x3C</td><td class="reg">x4</td></tr>
+              <tr><td class="varname">V06</td><td>0x10</td><td>0x3C</td><td class="reg">x5</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ PHASES ═══ -->
+  <div id="tab-phases" class="panel">
+    <div class="card">
+      <div class="card-title">JIT Compilation Phases (chronological)</div>
+      <div class="phase-list">
+        <!-- changed phases highlighted -->
+        <div style="display:grid;grid-template-columns:2fr 1fr 30px;padding:0.4rem 0.75rem;font-size:0.65rem;color:var(--muted);border-bottom:1px solid var(--border)">
+          <span>Phase</span><span style="text-align:right">Status</span><span></span>
+        </div>
+        <div class="phase-item"><span class="phase-name">Pre-import</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item changed"><span class="phase-name">Profile incorporation</span><span class="phase-status"><span class="tag tag-nochange">no changes (no PGO data)</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item"><span class="phase-name">Canonicalize entry</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Importation</span><span class="phase-status"><span class="tag tag-changed">✓ IR built</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item"><span class="phase-name">Early QMARK expansion</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item"><span class="phase-name">Morph - Add internal blocks</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item"><span class="phase-name">Head and tail merge</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Local morph</span><span class="phase-status"><span class="tag tag-changed">✓ Loop L00 identified</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Early liveness</span><span class="phase-status"><span class="tag tag-changed">✓ DEF/USE sets computed</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item"><span class="phase-name">Optimize control flow</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Invert loops</span><span class="phase-status"><span class="tag tag-changed">✓ BB01 guard + BB05/BB06 created</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Set block order</span><span class="phase-status"><span class="tag tag-changed">✓ Interruptible GC cycle found</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Build SSA representation</span><span class="phase-status"><span class="tag tag-changed">✓ PHI inserted, vars renamed</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Value Number</span><span class="phase-status"><span class="tag tag-changed">✓ VNs computed</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Assertion prop</span><span class="phase-status"><span class="tag tag-changed">✓ GE(loc1,0) simplified</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item"><span class="phase-name">Optimize index checks</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item"><span class="phase-name">Optimize Induction Variables</span><span class="phase-status"><span class="tag tag-nochange">skipped (non-const step)</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item"><span class="phase-name">VN-based dead store removal</span><span class="phase-status"><span class="tag tag-nochange">no changes</span></span><div class="dot dot-no"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Optimize pre-layout</span><span class="phase-status"><span class="tag tag-changed">✓ BB compacted to 3 blocks</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Rationalize IR → LIR</span><span class="phase-status"><span class="tag tag-changed">✓ HIR converted to LIR</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">LSRA (Linear Scan RA)</span><span class="phase-status"><span class="tag tag-changed">✓ Registers assigned</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Emit code</span><span class="phase-status"><span class="tag tag-changed">✓ 72 bytes ARM64</span></span><div class="dot dot-yes"></div></div>
+        <div class="phase-item changed"><span class="phase-name c-orange">Emit GC+EH tables</span><span class="phase-status"><span class="tag tag-changed">✓ GC interruptible 0x8–0x44</span></span><div class="dot dot-yes"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SSA / VN ═══ -->
+  <div id="tab-ssa" class="panel">
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title">SSA Variable Definitions</div>
+        <div class="ssa-entry"><span class="ssa-var">V00.1</span><span class="ssa-desc">Defined in BB00 (param)</span><span class="ssa-uses">1 use</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V01.1</span><span class="ssa-desc">Defined in BB00 (param)</span><span class="ssa-uses">1 use</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V02.1</span><span class="ssa-desc">Defined in BB00 (param)</span><span class="ssa-uses">2 uses</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V03.1</span><span class="ssa-desc">Defined in BB00 (param)</span><span class="ssa-uses">1 use</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V05.1</span><span class="ssa-desc">Defined in BB00 (initial, unused)</span><span class="ssa-uses">0 uses</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V05.2</span><span class="ssa-desc">Defined in BB01 → store 0</span><span class="ssa-uses">2 uses + φ</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V05.3</span><span class="ssa-desc">PHI in BB02 (V05.4 | V05.2)</span><span class="ssa-uses">local</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V05.4</span><span class="ssa-desc">Defined in BB02 (sum update)</span><span class="ssa-uses">2 uses + φ</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V05.5</span><span class="ssa-desc">PHI in BB06 (V05.4 | V05.2)</span><span class="ssa-uses">return value</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V06.2</span><span class="ssa-desc">Defined in BB01 → store 0</span><span class="ssa-uses">2 uses + φ</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V06.3</span><span class="ssa-desc">PHI in BB02 (V06.4 | V06.2)</span><span class="ssa-uses">2 local</span></div>
+        <div class="ssa-entry"><span class="ssa-var">V06.4</span><span class="ssa-desc">Defined in BB02 (i+1)</span><span class="ssa-uses">2 local + φ</span></div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">PHI Functions Inserted</div>
+          <div style="font-size:0.73rem;line-height:2;color:var(--text)">
+            <div><span class="c-cyan">BB02</span>: V05.3 = φ(V05.4<sub>BB02</sub>, V05.2<sub>BB05</sub>)</div>
+            <div><span class="c-cyan">BB02</span>: V06.3 = φ(V06.4<sub>BB02</sub>, V06.2<sub>BB05</sub>)</div>
+            <div><span class="c-green">BB06</span>: V05.5 = φ(V05.4<sub>BB04</sub>, V05.2<sub>BB01</sub>)</div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:1.5rem">
+          <div class="card-title">Value Numbers — Key Nodes</div>
+          <table>
+            <thead><tr><th>Node</th><th>VN</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td>CNS_INT 0</td><td class="reg">$40</td><td>Constant 0</td></tr>
+              <tr><td>CNS_INT 1</td><td class="reg">$41</td><td>Constant 1</td></tr>
+              <tr><td>V00 arg0</td><td class="reg">$80</td><td>param 0</td></tr>
+              <tr><td>V01 arg1</td><td class="reg">$81</td><td>param 1</td></tr>
+              <tr><td>V02 arg2</td><td class="reg">$82</td><td>loop bound</td></tr>
+              <tr><td>V03 arg3</td><td class="reg">$83</td><td>param 3</td></tr>
+              <tr><td>LE(arg2, 0)</td><td class="reg">$100</td><td>guard condition</td></tr>
+              <tr><td>sum+loop_terms</td><td class="reg">$104</td><td>new sum</td></tr>
+              <tr><td>i+1</td><td class="reg">$105</td><td>new counter</td></tr>
+              <tr><td>LT(i+1, arg2)</td><td class="reg">$106</td><td>loop cond</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card" style="margin-top:1.5rem">
+          <div class="card-title">Assertion Propagation</div>
+          <div style="font-size:0.73rem;line-height:1.8;color:var(--text)">
+            <div>Global #01: VN <span class="c-cyan">$82 ≤ 0</span> (arg2 ≤ 0, skip branch)</div>
+            <div>Global #02: VN <span class="c-orange">$82 &gt; 0</span> (arg2 &gt; 0, enter loop)</div>
+            <div style="margin-top:0.5rem;color:var(--muted)">In BB02, assertion #02 proves arg2 ≥ 1, tightening range checks for loop condition.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ LIVENESS ═══ -->
+  <div id="tab-liveness" class="panel">
+    <div class="card">
+      <div class="card-title">Block Liveness (after inversion, 5 blocks)</div>
+      <div class="live-grid" style="margin-bottom:1rem">
+        <div class="live-header" style="text-align:left">Block</div>
+        <div class="live-header">V00</div>
+        <div class="live-header">V01</div>
+        <div class="live-header">V02</div>
+        <div class="live-header">V03</div>
+        <div class="live-header">V05(sum)</div>
+        <div class="live-header">V06(i)</div>
+
+        <div class="live-bb">BB01 IN</div>
+        <div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div><div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div>
+        <div class="live-bb">BB01 OUT</div>
+        <div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div>
+
+        <div class="live-bb">BB05 IN</div>
+        <div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div><div class="live-cell live-in">✓</div>
+        <div class="live-bb">BB05 OUT</div>
+        <div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div><div class="live-cell live-out">✓</div>
+
+        <div class="live-bb">BB04 IN</div>
+        <div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div><div class="live-cell live-in">✓</div><div class="live-cell live-dead">—</div>
+        <div class="live-bb">BB04 OUT</div>
+        <div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div><div class="live-cell live-dead">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">USE / DEF Sets</div>
+      <table>
+        <thead><tr><th>Block</th><th>USE (variables read)</th><th>DEF (variables written)</th></tr></thead>
+        <tbody>
+          <tr><td class="varname">BB01</td><td style="color:var(--accent)">V02</td><td style="color:var(--accent4)">V05, V06</td></tr>
+          <tr><td class="varname">BB05</td><td style="color:var(--accent)">V00, V01, V02, V03, V05, V06</td><td style="color:var(--accent4)">V05, V06</td></tr>
+          <tr><td class="varname">BB04</td><td style="color:var(--accent)">V05</td><td style="color:var(--accent4)">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ ASM ═══ -->
+  <div id="tab-asm" class="panel">
+    <div class="card">
+      <div class="card-title">ARM64 Assembly — Final Emitted Code (72 bytes)</div>
+      <div class="code-block"><span class="asm-comment">; ─── PROLOG ──────────────────────────────────────── IG01 ───</span>
+<span class="asm-addr">000000</span>  <span class="asm-instr">stp</span>   <span class="asm-op">fp, lr, [sp, #-0x10]!</span>       <span class="asm-comment">; save frame/link regs</span>
+<span class="asm-addr">000004</span>  <span class="asm-instr">mov</span>   <span class="asm-op">fp, sp</span>                       <span class="asm-comment">; set frame pointer</span>
+
+<span class="asm-comment">; ─── BB01: Preheader + Guard ─────────────────────── IG02 ───</span>
+<span class="asm-addr">000008</span>  <span class="asm-instr">mov</span>   <span class="asm-op">w4, wzr</span>                      <span class="asm-comment">; sum (V05) = 0</span>
+<span class="asm-addr">00000C</span>  <span class="asm-instr">mov</span>   <span class="asm-op">w5, wzr</span>                      <span class="asm-comment">; i   (V06) = 0</span>
+<span class="asm-addr">000010</span>  <span class="asm-instr">cmp</span>   <span class="asm-op">w2, #0</span>                       <span class="asm-comment">; test: arg2 (loop bound)</span>
+<span class="asm-addr">000014</span>  <span class="asm-instr">ble</span>   <span class="asm-op">G_M22598_IG04</span>                <span class="asm-comment">; if arg2 ≤ 0, skip loop</span>
+<span class="asm-addr">000018</span>  <span class="asm-comment">; align [4 bytes for IG03]</span>
+<span class="asm-addr">00001C</span>  <span class="asm-comment">; align [4 bytes]</span>
+
+<span class="asm-comment">; ─── BB05: Loop Body ─────────────────────────────── IG03 ─── 🔥 HOT</span>
+<span class="asm-loop">G_M22598_IG03:   </span><span class="asm-comment">; bbWeight=4, loop-aligned at 0x20</span>
+<span class="asm-addr">000020</span>  <span class="asm-instr">add</span>   <span class="asm-op">w4, w4, w5</span>                   <span class="asm-comment">; sum += i</span>
+<span class="asm-addr">000024</span>  <span class="asm-instr">add</span>   <span class="asm-op">w4, w4, w0</span>                   <span class="asm-comment">; sum += arg0</span>
+<span class="asm-addr">000028</span>  <span class="asm-instr">add</span>   <span class="asm-op">w4, w4, w1</span>                   <span class="asm-comment">; sum += arg1</span>
+<span class="asm-addr">00002C</span>  <span class="asm-instr">add</span>   <span class="asm-op">w4, w4, w3</span>                   <span class="asm-comment">; sum += arg3</span>
+<span class="asm-addr">000030</span>  <span class="asm-instr">add</span>   <span class="asm-op">w5, w5, #1</span>                   <span class="asm-comment">; i++</span>
+<span class="asm-addr">000034</span>  <span class="asm-instr">cmp</span>   <span class="asm-op">w5, w2</span>                       <span class="asm-comment">; i vs arg2</span>
+<span class="asm-addr">000038</span>  <span class="asm-instr">blt</span>   <span class="asm-op">G_M22598_IG03</span>                <span class="asm-comment">; if i &lt; arg2, loop back</span>
+
+<span class="asm-comment">; ─── BB04: Return ────────────────────────────────── IG04 ───</span>
+<span class="asm-loop">G_M22598_IG04:</span>
+<span class="asm-addr">00003C</span>  <span class="asm-instr">mov</span>   <span class="asm-op">w0, w4</span>                       <span class="asm-comment">; return sum (w4 → w0)</span>
+
+<span class="asm-comment">; ─── EPILOG ──────────────────────────────────────── IG05 ───</span>
+<span class="asm-addr">000040</span>  <span class="asm-instr">ldp</span>   <span class="asm-op">fp, lr, [sp], #0x10</span>          <span class="asm-comment">; restore frame/link regs</span>
+<span class="asm-addr">000044</span>  <span class="asm-instr">ret</span>   <span class="asm-op">lr</span>                            <span class="asm-comment">; return</span>
+
+<span class="asm-comment">; Total: 72 bytes  |  PerfScore: 23.5</span>
+<span class="asm-comment">; Hot loop: 28 bytes  |  Loop PerfScore: 16.0</span></div>
+    </div>
+    <div class="grid-3">
+      <div class="kpi"><div class="kpi-value c-cyan">8</div><div class="kpi-label">Prolog bytes</div></div>
+      <div class="kpi"><div class="kpi-value c-orange">28</div><div class="kpi-label">Loop body bytes</div></div>
+      <div class="kpi"><div class="kpi-value c-green">36</div><div class="kpi-label">Other bytes</div></div>
+      <div class="kpi"><div class="kpi-value" style="color:var(--warn)">16.0</div><div class="kpi-label">Loop PerfScore</div></div>
+      <div class="kpi"><div class="kpi-value c-purple">4</div><div class="kpi-label">Loop align pad</div></div>
+      <div class="kpi"><div class="kpi-value c-cyan">7</div><div class="kpi-label">GC info bytes</div></div>
+    </div>
+  </div>
+
+  <!-- ═══ ALLOCATIONS ═══ -->
+  <div id="tab-alloc" class="panel">
+    <div class="card">
+      <div class="card-title">Memory Allocation by Kind — Total 104,239 bytes</div>
+      <div id="alloc-bars"></div>
+    </div>
+    <div class="grid-2" style="margin-top:1.5rem">
+      <div class="card">
+        <div class="card-title">Memory Summary</div>
+        <table>
+          <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Total alloc count</td><td class="c-cyan">1,259</td></tr>
+            <tr><td>Total alloc size</td><td class="c-cyan">104,239 bytes</td></tr>
+            <tr><td>allocateMemory</td><td>131,072 bytes</td></tr>
+            <tr><td>nraUsed</td><td>107,448 bytes</td></tr>
+            <tr><td>Max single alloc</td><td>7,904 bytes</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-title">Final Metrics</div>
+        <table>
+          <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>ActualCodeBytes</td><td class="c-orange">72</td></tr>
+            <tr><td>GCInfoBytes</td><td>7</td></tr>
+            <tr><td>LoopsFoundDuringOpts</td><td class="c-cyan">1</td></tr>
+            <tr><td>LoopsInverted</td><td class="c-cyan">1</td></tr>
+            <tr><td>VarsInSsa</td><td>6</td></tr>
+            <tr><td>LocalAssertionCount</td><td>4</td></tr>
+            <tr><td>MorphTrackedLocals</td><td>6</td></tr>
+            <tr><td>BasicBlocksAtCodegen</td><td>3</td></tr>
+            <tr><td>PerfScore</td><td class="c-orange">23.5</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function showTab(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.currentTarget.classList.add('active');
+}
+
+// Build allocation bars
+const allocs = [
+  { label: 'DebugOnly', size: 31436, color: '#64748b' },
+  { label: 'LSRA', size: 10592, color: '#00e5ff' },
+  { label: 'AssertionProp', size: 7676, color: '#a855f7' },
+  { label: 'ValueNumber', size: 7632, color: '#a855f7' },
+  { label: 'InstDesc', size: 7328, color: '#f59e0b' },
+  { label: 'LoopIVOpts', size: 7536, color: '#ff6b35' },
+  { label: 'ASTNode', size: 6112, color: '#22c55e' },
+  { label: 'SSA', size: 1736, color: '#22c55e' },
+  { label: 'Codegen', size: 2656, color: '#00e5ff' },
+  { label: 'BasicBlock', size: 2104, color: '#64748b' },
+  { label: 'LSRA_RefPosition', size: 2960, color: '#00e5ff' },
+  { label: 'VariableLiveRanges', size: 2024, color: '#f59e0b' },
+  { label: 'CSE', size: 1712, color: '#ef4444' },
+  { label: 'GC', size: 1312, color: '#22c55e' },
+  { label: 'Loops', size: 1504, color: '#ff6b35' },
+  { label: 'LvaTable', size: 1688, color: '#64748b' },
+  { label: 'LSRA_Interval', size: 1056, color: '#00e5ff' },
+  { label: 'CopyProp', size: 1128, color: '#a855f7' },
+  { label: 'DominatorMemory', size: 632, color: '#64748b' },
+  { label: 'LoopOpt', size: 648, color: '#ff6b35' },
+];
+const maxSize = allocs[0].size;
+const container = document.getElementById('alloc-bars');
+allocs.forEach(a => {
+  const pct = (a.size / maxSize * 100).toFixed(1);
+  const totalPct = (a.size / 104239 * 100).toFixed(1);
+  const row = document.createElement('div');
+  row.className = 'alloc-row';
+  row.innerHTML = `
+    <div class="alloc-label">${a.label}</div>
+    <div class="alloc-bar-wrap"><div class="alloc-bar" style="width:${pct}%;background:${a.color}"></div></div>
+    <div class="alloc-val">${(a.size/1024).toFixed(1)}K <span style="color:#64748b;font-size:0.6rem">${totalPct}%</span></div>
+  `;
+  container.appendChild(row);
+});
+</script>
+</body>
+</html>
