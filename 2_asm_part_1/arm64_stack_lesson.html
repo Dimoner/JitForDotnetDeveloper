@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>ARM64 Stack — Интерактивный урок</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 1.6rem;
+    margin-bottom: 6px;
+    background: linear-gradient(90deg, #58a6ff, #bc8cff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    text-align: center;
+    color: #8b949e;
+    font-size: 0.85rem;
+    margin-bottom: 24px;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  /* ASM Panel */
+  .asm-panel {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 16px;
+    overflow: hidden;
+  }
+  .panel-title {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #8b949e;
+    margin-bottom: 12px;
+  }
+  .asm-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border-left: 3px solid transparent;
+    margin-bottom: 2px;
+  }
+  .asm-line:hover { background: #1c2128; }
+  .asm-line.active {
+    background: #1c2a3a;
+    border-left-color: #58a6ff;
+  }
+  .asm-line.executed {
+    opacity: 0.5;
+  }
+  .step-num {
+    background: #21262d;
+    color: #8b949e;
+    font-size: 0.65rem;
+    border-radius: 4px;
+    padding: 1px 5px;
+    min-width: 22px;
+    text-align: center;
+    margin-top: 2px;
+  }
+  .asm-line.active .step-num {
+    background: #58a6ff;
+    color: #000;
+  }
+  .asm-code {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+  .asm-mnemonic { color: #ff7b72; }
+  .asm-reg { color: #79c0ff; }
+  .asm-imm { color: #ffa657; }
+  .asm-mem { color: #7ee787; }
+  .asm-label { color: #bc8cff; font-weight: bold; }
+  .asm-comment {
+    color: #6e7681;
+    font-size: 0.72rem;
+    margin-top: 2px;
+    line-height: 1.3;
+  }
+
+  /* Stack Panel */
+  .stack-panel {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .stack-wrapper {
+    position: relative;
+  }
+  .sp-arrow {
+    position: absolute;
+    left: -4px;
+    transition: top 0.4s cubic-bezier(0.34,1.56,0.64,1);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    z-index: 10;
+  }
+  .sp-label {
+    background: #f78166;
+    color: #000;
+    font-size: 0.6rem;
+    font-weight: bold;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  .sp-line {
+    width: 10px;
+    height: 2px;
+    background: #f78166;
+  }
+  .fp-arrow {
+    position: absolute;
+    right: -4px;
+    transition: top 0.4s cubic-bezier(0.34,1.56,0.64,1);
+    display: flex;
+    align-items: center;
+    flex-direction: row-reverse;
+    gap: 4px;
+    z-index: 10;
+  }
+  .fp-label {
+    background: #bc8cff;
+    color: #000;
+    font-size: 0.6rem;
+    font-weight: bold;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  .fp-line {
+    width: 10px;
+    height: 2px;
+    background: #bc8cff;
+  }
+  .stack-cell {
+    height: 40px;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    font-family: monospace;
+    font-size: 0.78rem;
+    position: relative;
+    transition: all 0.3s ease;
+  }
+  .stack-cell.empty { color: #3d444d; background: #0d1117; }
+  .stack-cell.filled { background: #1c2a3a; border-color: #388bfd; }
+  .stack-cell.highlight { background: #1a3040; border-color: #58a6ff; box-shadow: 0 0 8px #58a6ff44; }
+  .stack-cell.fp-cell { background: #261f3a; border-color: #bc8cff; }
+  .stack-cell.lr-cell { background: #1f2d1a; border-color: #7ee787; }
+  .stack-cell.x19-cell { background: #2a1f1a; border-color: #ffa657; }
+  .cell-addr {
+    font-size: 0.65rem;
+    color: #6e7681;
+    margin-right: 8px;
+    min-width: 70px;
+  }
+  .cell-val {
+    flex: 1;
+    font-weight: bold;
+  }
+  .cell-tag {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #000;
+  }
+  .tag-fp { background: #bc8cff; }
+  .tag-lr { background: #7ee787; }
+  .tag-x19 { background: #ffa657; }
+  .tag-ret { background: #79c0ff; }
+
+  /* Registers Panel */
+  .regs-panel {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .reg-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #0d1117;
+    border-radius: 6px;
+    border: 1px solid #21262d;
+    transition: all 0.3s;
+  }
+  .reg-row.changed {
+    border-color: #ffa657;
+    background: #1f1a0d;
+  }
+  .reg-name {
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #79c0ff;
+    min-width: 35px;
+    font-weight: bold;
+  }
+  .reg-val {
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #e6edf3;
+    flex: 1;
+  }
+  .reg-desc {
+    font-size: 0.65rem;
+    color: #6e7681;
+  }
+
+  /* Controls */
+  .controls {
+    max-width: 1100px;
+    margin: 16px auto 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #e6edf3;
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+  }
+  .btn:hover { background: #30363d; }
+  .btn.primary {
+    background: #1f6feb;
+    border-color: #388bfd;
+    color: #fff;
+  }
+  .btn.primary:hover { background: #388bfd; }
+
+  /* Explanation */
+  .explanation {
+    max-width: 1100px;
+    margin: 14px auto 0;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 14px 18px;
+    min-height: 80px;
+    transition: all 0.2s;
+  }
+  .exp-title {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #8b949e;
+    margin-bottom: 6px;
+  }
+  .exp-body {
+    font-size: 0.88rem;
+    line-height: 1.6;
+    color: #c9d1d9;
+  }
+  .exp-body code {
+    background: #21262d;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    color: #79c0ff;
+  }
+  .exp-body strong { color: #ffa657; }
+
+  .step-counter {
+    color: #8b949e;
+    font-size: 0.85rem;
+  }
+  .progress {
+    flex: 1;
+    height: 4px;
+    background: #21262d;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #1f6feb, #bc8cff);
+    border-radius: 2px;
+    transition: width 0.3s;
+  }
+
+  .ig-label {
+    font-size: 0.65rem;
+    color: #bc8cff;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 4px 8px 2px;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+
+<h1>ARM64 Stack Визуализация</h1>
+<p class="subtitle">Caller2(int x) — пошаговый разбор ассемблера с отображением стека</p>
+
+<div class="layout">
+  <!-- ASM -->
+  <div class="asm-panel">
+    <div class="panel-title">📋 Ассемблер (ARM64)</div>
+    <div id="asm-list"></div>
+  </div>
+
+  <!-- Stack -->
+  <div class="stack-panel">
+    <div class="panel-title">📦 Стек (адреса убывают вверх)</div>
+    <div style="position:relative; padding: 0 18px;">
+      <div class="sp-arrow" id="sp-arrow" style="top:0px">
+        <div class="sp-label">SP</div>
+        <div class="sp-line"></div>
+      </div>
+      <div class="fp-arrow" id="fp-arrow" style="top:-30px; opacity:0">
+        <div class="fp-label">FP</div>
+        <div class="fp-line"></div>
+      </div>
+      <div id="stack-cells"></div>
+    </div>
+  </div>
+
+  <!-- Registers -->
+  <div class="regs-panel">
+    <div class="panel-title">⚙️ Регистры</div>
+    <div id="regs-list"></div>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="btn" id="btn-prev">← Назад</button>
+  <button class="btn primary" id="btn-next">Следующий шаг →</button>
+  <button class="btn" id="btn-reset">↺ Сброс</button>
+  <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+  <div class="step-counter" id="step-counter">Шаг 0 / 11</div>
+</div>
+
+<div class="explanation">
+  <div class="exp-title">💡 Объяснение</div>
+  <div class="exp-body" id="exp-body">Нажмите <strong>«Следующий шаг»</strong> чтобы начать пошаговый разбор. Мы разберём каждую инструкцию ARM64 и увидим, как меняется стек и регистры.</div>
+</div>
+
+<script>
+// Stack base address simulation
+const BASE_SP = 0x1000; // high address (stack grows down)
+const CELL_HEIGHT = 44; // px per cell
+
+// Steps definition
+// Each step: { asmIdx, sp, fp, regs: {}, stackState: [...], explanation }
+// stackState: array of {offset_from_base, label, type, value}
+
+const steps = [
+  {
+    title: "Начальное состояние",
+    asmIdx: -1,
+    spOffset: 0, // sp = BASE_SP
+    fpActive: false,
+    regs: { w0: 'x (аргумент)', x1: '???', x19: '???', fp: '???', lr: 'ret addr (вызывающего)' },
+    changed: [],
+    stack: [], // nothing pushed yet
+    exp: `Функция <code>Caller2(int x)</code> вызвана.<br>
+<strong>w0</strong> содержит аргумент <code>x</code>.<br>
+Стек пуст (с точки зрения нашего фрейма). SP указывает на текущую вершину.<br>
+Атрибут <code>[NoInlining]</code> у <code>Callee</code> означает — JIT <strong>не встроит</strong> её код, поэтому нужен настоящий вызов через <code>blr</code>.`
+  },
+  {
+    title: "stp fp, lr, [sp, #-0x20]!",
+    asmIdx: 0,
+    spOffset: -0x20, // sp -= 0x20 (pre-index)
+    fpActive: false,
+    regs: { w0: 'x', x1: '???', x19: '???', fp: 'старый fp', lr: 'адрес возврата' },
+    changed: ['fp','lr','sp'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: '(padding)', type: 'empty', value: '0x00' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>stp fp, lr, [sp, #-0x20]!</strong><br>
+<code>stp</code> = Store Pair — сохраняет два 8-байтных регистра.<br>
+Суффикс <code>!</code> (pre-index) означает: сначала <strong>SP = SP − 0x20 (−32 байта)</strong>, потом запись.<br>
+• <code>fp</code> → <code>[sp + 0x10]</code> — сохраняем фрейм-поинтер вызывающего<br>
+• <code>lr</code> → <code>[sp + 0x18]</code> — сохраняем адрес возврата (Link Register)<br>
+Стек вырос на 32 байта вниз.`
+  },
+  {
+    title: "str x19, [sp, #0x18]",
+    asmIdx: 1,
+    spOffset: -0x20,
+    fpActive: false,
+    regs: { w0: 'x', x1: '???', x19: 'старый x19', fp: 'старый fp', lr: 'адрес возврата' },
+    changed: ['x19'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>str x19, [sp, #0x18]</strong><br>
+Сохраняем регистр <code>x19</code> на стек по адресу <code>sp + 0x18</code>.<br>
+<code>x19</code> — это <strong>callee-saved</strong> регистр (в ABI ARM64 регистры x19–x28 должны быть сохранены вызываемой функцией).<br>
+Мы будем использовать <code>x19</code> для хранения аргумента <code>x</code> пока вызываем <code>Callee</code>.`
+  },
+  {
+    title: "mov fp, sp",
+    asmIdx: 2,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: 'x', x1: '???', x19: 'старый x19', fp: 'sp (наш фрейм)', lr: 'адрес возврата' },
+    changed: ['fp'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>mov fp, sp</strong><br>
+Устанавливаем <code>fp</code> (frame pointer, x29) равным текущему <code>sp</code>.<br>
+Теперь <code>fp</code> указывает на <strong>начало нашего стекового фрейма</strong>.<br>
+Это позволяет дебаггерам восстановить цепочку вызовов — каждый фрейм содержит сохранённый <code>fp</code> предыдущего.`
+  },
+  {
+    title: "mov w19, w0",
+    asmIdx: 3,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: 'x', x1: '???', x19: 'x (копия!)', fp: 'sp (наш фрейм)', lr: 'адрес возврата' },
+    changed: ['x19', 'w0'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>mov w19, w0</strong><br>
+Копируем аргумент <code>x</code> из <code>w0</code> в <code>w19</code>.<br>
+Почему? Потому что <strong>сейчас мы будем вызывать <code>Callee(x)</code></strong> через <code>blr</code>.<br>
+Вызов <code>blr</code> может затереть <code>w0</code> (это caller-saved регистр).<br>
+<code>x19</code> — callee-saved, значит <code>Callee</code> его не тронет → мы получим <code>x</code> обратно после вызова.`
+  },
+  {
+    title: "mov w0, w19 (подготовка аргумента)",
+    asmIdx: 4,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: 'x (для Callee)', x1: '???', x19: 'x', fp: 'sp (наш фрейм)', lr: 'адрес возврата' },
+    changed: ['w0'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>mov w0, w19</strong><br>
+Кладём аргумент для <code>Callee</code> в <code>w0</code>.<br>
+По ARM64 ABI — первый аргумент всегда в <code>w0</code> (или <code>x0</code> для 64-бит).<br>
+Это кажется лишним здесь (w0 и так равен x), но компилятор генерирует это для корректности.`
+  },
+  {
+    title: "movz/movk x1 — загрузка адреса Callee",
+    asmIdx: 5,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: 'x (аргумент)', x1: 'адрес vtable/stub', x19: 'x', fp: 'sp', lr: 'адрес возврата' },
+    changed: ['x1'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>movz x1, #0xD1FFAB1E + movk x1, ... LSL #16 + movk x1, #1 LSL #32</strong><br>
+Три инструкции строят 64-битный адрес в <code>x1</code>.<br>
+<code>0xD1FFAB1E</code> — это магическое значение <strong>"diffable"</strong>, заглушка JIT.<br>
+Реальный адрес <code>Callee</code> неизвестен во время компиляции — JIT подставит его позже.<br>
+<code>movz</code> = Move with Zero (обнуляет остальные биты), <code>movk</code> = Move with Keep (сохраняет другие биты) — так строятся большие константы на ARM64.`
+  },
+  {
+    title: "ldr x1, [x1]",
+    asmIdx: 6,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: 'x (аргумент)', x1: 'реальный адрес Callee', x19: 'x', fp: 'sp', lr: 'адрес возврата' },
+    changed: ['x1'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>ldr x1, [x1]</strong><br>
+Читаем 64-битное значение по адресу в <code>x1</code> (indirect load).<br>
+Это <strong>индиректный вызов через таблицу</strong> — JIT хранит реальный указатель на код <code>Callee</code> в памяти.<br>
+После этого <code>x1</code> = реальный машинный адрес функции <code>Callee</code>.<br>
+Такой паттерн используется .NET для поддержки тихой перекомпиляции методов (tiered compilation).`
+  },
+  {
+    title: "blr x1 — вызов Callee",
+    asmIdx: 7,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: 'x+1 (результат Callee)', x1: 'адрес Callee', x19: 'x', fp: 'sp', lr: 'наш ret addr' },
+    changed: ['w0', 'lr'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>blr x1</strong> — Branch with Link to Register<br>
+Это <strong>фактический вызов <code>Callee(x)</code></strong>.<br>
+1. <code>lr</code> = адрес следующей инструкции (для возврата)<br>
+2. Переход по адресу в <code>x1</code><br>
+<code>Callee</code> выполняет <code>x + 1</code> и возвращает результат в <code>w0</code>.<br>
+Поскольку <code>x19</code> — callee-saved, <code>Callee</code> <strong>обязана его сохранить</strong> → наше <code>x</code> в <code>x19</code> не пострадало!`
+  },
+  {
+    title: "add w0, w0, w19 — итоговое сложение",
+    asmIdx: 8,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: 'Callee(x)+x = x+1+x', x1: 'адрес Callee', x19: 'x', fp: 'sp', lr: 'адрес возврата' },
+    changed: ['w0'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: 'старый x19' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>add w0, w0, w19</strong><br>
+<code>w0 = w0 + w19</code> = <code>Callee(x) + x</code> = <code>(x+1) + x</code> = <code>2x+1</code><br>
+Это соответствует коду C#: <code>var res = Callee(x); return res + x;</code><br>
+Результат готов в <code>w0</code> — регистре возвращаемого значения по ABI.`
+  },
+  {
+    title: "ldr x19, [sp, #0x18] — восстановление x19",
+    asmIdx: 9,
+    spOffset: -0x20,
+    fpActive: true,
+    regs: { w0: '2x+1 (результат)', x1: 'адрес Callee', x19: 'восстановлен!', fp: 'sp', lr: 'адрес возврата' },
+    changed: ['x19'],
+    stack: [
+      { rel: 0x00, label: 'x19 (пусто)', type: 'empty', value: '???' },
+      { rel: 0x08, label: 'x19 (saved)', type: 'x19', value: '← читаем обратно' },
+      { rel: 0x10, label: 'fp (saved)', type: 'fp', value: 'старый fp' },
+      { rel: 0x18, label: 'lr (saved)', type: 'lr', value: 'ret addr' },
+    ],
+    exp: `<strong>ldr x19, [sp, #0x18]</strong><br>
+Восстанавливаем сохранённый <code>x19</code> со стека.<br>
+Это эпилог функции — мы обязаны <strong>вернуть callee-saved регистры</strong> в то состояние, в котором получили.<br>
+Вызывающий рассчитывает, что <code>x19</code> после нашего вызова не изменился.`
+  },
+  {
+    title: "ldp fp, lr, [sp], #0x20 — восстановление фрейма",
+    asmIdx: 10,
+    spOffset: 0, // sp restored
+    fpActive: false,
+    regs: { w0: '2x+1 (результат)', x1: 'адрес Callee', x19: 'восстановлен', fp: 'восстановлен', lr: 'ret addr восстановлен' },
+    changed: ['fp', 'lr', 'sp'],
+    stack: [],
+    exp: `<strong>ldp fp, lr, [sp], #0x20</strong><br>
+Load Pair с post-index: читаем <code>fp</code> и <code>lr</code> со стека, потом <strong>SP = SP + 0x20</strong>.<br>
+Стек полностью освобождён — возвращён к исходному состоянию.<br>
+<code>fp</code> и <code>lr</code> восстановлены → вызывающий не подозревает, что мы что-то трогали.`
+  },
+  {
+    title: "ret lr — возврат",
+    asmIdx: 11,
+    spOffset: 0,
+    fpActive: false,
+    regs: { w0: '2x+1 ← финальный результат', x1: '—', x19: 'восстановлен', fp: 'восстановлен', lr: 'ret addr' },
+    changed: [],
+    stack: [],
+    exp: `<strong>ret lr</strong><br>
+Переходим по адресу в <code>lr</code> — возвращаемся к вызывающему.<br>
+<code>w0</code> = <code>2x+1</code> — это и есть результат <code>Caller2(x)</code>.<br>
+<br>
+✅ <strong>Итог:</strong> функция использовала 32 байта стека для пролога, сохранила <code>x19</code> как callee-saved, вызвала <code>Callee</code> через indirect pointer, вычислила <code>res + x</code> и вернула результат.`
+  }
+];
+
+const asmInstructions = [
+  { ig: 'G_M000_IG01', label: 'Пролог', insts: [
+    { code: 'stp fp, lr, [sp, #-0x20]!', comment: 'Создаём фрейм, сохраняем fp и lr' },
+    { code: 'str x19, [sp, #0x18]', comment: 'Сохраняем callee-saved x19' },
+    { code: 'mov fp, sp', comment: 'Устанавливаем frame pointer' },
+    { code: 'mov w19, w0', comment: 'Сохраняем x в x19' },
+  ]},
+  { ig: 'G_M000_IG02', label: 'Тело', insts: [
+    { code: 'mov w0, w19', comment: 'Аргумент для Callee' },
+    { code: 'movz x1, #0xD1FFAB1E', comment: 'Строим адрес Callee (часть 1)' },
+    { code: 'movk x1, #0xD1FFAB1E LSL #16', comment: 'Строим адрес Callee (часть 2)' },
+    { code: 'ldr x1, [x1]', comment: 'Читаем реальный адрес Callee' },
+    { code: 'blr x1', comment: 'Вызываем Callee(x) → w0=x+1' },
+    { code: 'add w0, w0, w19', comment: 'res + x = (x+1) + x' },
+  ]},
+  { ig: 'G_M000_IG03', label: 'Эпилог', insts: [
+    { code: 'ldr x19, [sp, #0x18]', comment: 'Восстанавливаем x19' },
+    { code: 'ldp fp, lr, [sp], #0x20', comment: 'Восстанавливаем fp, lr, убираем фрейм' },
+    { code: 'ret lr', comment: 'Возврат, w0=2x+1' },
+  ]}
+];
+
+// Map stepIdx (1-based) to asmIdx
+const stepAsmMap = [-1,0,1,2,3,4,5,6,6,7,8,9,10,11];
+
+let currentStep = 0;
+
+function renderAsm() {
+  const list = document.getElementById('asm-list');
+  list.innerHTML = '';
+  let globalIdx = 0;
+  asmInstructions.forEach(group => {
+    const lbl = document.createElement('div');
+    lbl.className = 'ig-label';
+    lbl.textContent = group.ig + ' — ' + group.label;
+    list.appendChild(lbl);
+    group.insts.forEach((inst, i) => {
+      const div = document.createElement('div');
+      div.className = 'asm-line';
+      div.id = 'asm-' + globalIdx;
+      const step = steps[currentStep];
+      const activeIdx = step.asmIdx;
+      if (globalIdx === activeIdx) div.classList.add('active');
+      else if (activeIdx >= 0 && globalIdx < activeIdx) div.classList.add('executed');
+
+      // Tokenize
+      const parts = inst.code.split(' ');
+      const mnemonic = parts[0];
+      const rest = parts.slice(1).join(' ');
+      
+      div.innerHTML = `
+        <div class="step-num">${globalIdx}</div>
+        <div>
+          <div class="asm-code"><span class="asm-mnemonic">${mnemonic}</span> <span class="asm-mem">${rest}</span></div>
+          <div class="asm-comment"># ${inst.comment}</div>
+        </div>`;
+      list.appendChild(div);
+      if (globalIdx === activeIdx) {
+        setTimeout(() => div.scrollIntoView({behavior:'smooth', block:'nearest'}), 50);
+      }
+      globalIdx++;
+    });
+  });
+}
+
+const NUM_CELLS = 4;
+
+function renderStack() {
+  const container = document.getElementById('stack-cells');
+  container.innerHTML = '';
+  const step = steps[currentStep];
+
+  // Build cells from top (low addr) to bottom (high addr)
+  // We show 4 cells always, representing sp+0 to sp+0x18 (when frame is open)
+  const addrs = [
+    { rel: 0x00, defaultLabel: '[sp + 0x00]' },
+    { rel: 0x08, defaultLabel: '[sp + 0x08]' },
+    { rel: 0x10, defaultLabel: '[sp + 0x10]' },
+    { rel: 0x18, defaultLabel: '[sp + 0x18]' },
+  ];
+
+  if (step.stack.length === 0) {
+    // No frame
+    const info = document.createElement('div');
+    info.style.cssText = 'color:#6e7681;font-size:0.8rem;padding:10px;text-align:center';
+    info.textContent = '[ стек чист — фрейм не создан / уже освобождён ]';
+    container.appendChild(info);
+    // Hide arrows
+    document.getElementById('sp-arrow').style.opacity = '0';
+    document.getElementById('fp-arrow').style.opacity = '0';
+    return;
+  }
+
+  step.stack.forEach((cell, i) => {
+    const div = document.createElement('div');
+    let cls = 'stack-cell ';
+    if (cell.type === 'empty') cls += 'empty';
+    else if (cell.type === 'fp') cls += 'filled fp-cell';
+    else if (cell.type === 'lr') cls += 'filled lr-cell';
+    else if (cell.type === 'x19') cls += 'filled x19-cell';
+    else cls += 'filled';
+
+    div.className = cls;
+    let tagHtml = '';
+    if (cell.type === 'fp') tagHtml = '<span class="cell-tag tag-fp">FP</span>';
+    else if (cell.type === 'lr') tagHtml = '<span class="cell-tag tag-lr">LR</span>';
+    else if (cell.type === 'x19') tagHtml = '<span class="cell-tag tag-x19">X19</span>';
+
+    const spVal = BASE_SP + step.spOffset;
+    const addr = spVal + cell.rel;
+    div.innerHTML = `
+      <span class="cell-addr">0x${addr.toString(16).toUpperCase()}</span>
+      <span class="cell-val">${cell.label}</span>
+      <span style="font-size:0.7rem;color:#6e7681;margin:0 6px">${cell.value}</span>
+      ${tagHtml}`;
+    container.appendChild(div);
+  });
+
+  // Position SP arrow — points to sp (cell index 0 = top)
+  const spY = 20;
+  const spArrow = document.getElementById('sp-arrow');
+  spArrow.style.opacity = '1';
+  spArrow.style.top = spY + 'px';
+
+  // Position FP arrow
+  const fpArrow = document.getElementById('fp-arrow');
+  if (step.fpActive) {
+    fpArrow.style.opacity = '1';
+    fpArrow.style.top = spY + 'px'; // fp = sp after mov fp,sp
+  } else {
+    fpArrow.style.opacity = '0';
+  }
+}
+
+function renderRegs() {
+  const list = document.getElementById('regs-list');
+  list.innerHTML = '';
+  const step = steps[currentStep];
+  const regs = [
+    ['SP', 'sp', 'Stack Pointer'],
+    ['FP', 'fp', 'Frame Pointer (x29)'],
+    ['LR', 'lr', 'Link Register (x30)'],
+    ['w0/x0', 'w0', 'Аргумент / результат'],
+    ['x1', 'x1', 'Scratchpad / адрес'],
+    ['x19', 'x19', 'Callee-saved (наш x)'],
+  ];
+  const spLabel = step.spOffset !== 0 
+    ? `0x${(BASE_SP + step.spOffset).toString(16).toUpperCase()} (−0x${(-step.spOffset).toString(16)})` 
+    : `0x${BASE_SP.toString(16).toUpperCase()} (исходный)`;
+
+  const specialVals = {
+    'SP': { val: spLabel, changed: step.changed.includes('sp') },
+  };
+
+  regs.forEach(([name, key, desc]) => {
+    const div = document.createElement('div');
+    div.className = 'reg-row' + (step.changed.includes(key) ? ' changed' : '');
+    let val = key === 'sp' ? spLabel : (step.regs[key] || '—');
+    div.innerHTML = `
+      <div class="reg-name">${name}</div>
+      <div class="reg-val">${val}</div>
+      <div class="reg-desc">${desc}</div>`;
+    list.appendChild(div);
+  });
+}
+
+function renderExplanation() {
+  const step = steps[currentStep];
+  document.getElementById('exp-body').innerHTML = step.exp;
+  document.getElementById('step-counter').textContent = `Шаг ${currentStep} / ${steps.length - 1}`;
+  document.getElementById('progress-bar').style.width = `${(currentStep / (steps.length - 1)) * 100}%`;
+}
+
+function render() {
+  renderAsm();
+  renderStack();
+  renderRegs();
+  renderExplanation();
+}
+
+document.getElementById('btn-next').onclick = () => {
+  if (currentStep < steps.length - 1) { currentStep++; render(); }
+};
+document.getElementById('btn-prev').onclick = () => {
+  if (currentStep > 0) { currentStep--; render(); }
+};
+document.getElementById('btn-reset').onclick = () => {
+  currentStep = 0; render();
+};
+
+render();
+</script>
+</body>
+</html>
